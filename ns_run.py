@@ -82,7 +82,7 @@ def usage():
        | String used as prefix for the different output files.
        | No default.
 
-    ``energy_calculator= ( ASE | lammps | internal | fortran)``
+    ``energy_calculator= ( ASE | lammps | internal | fortran | ASE_JUL)``
        | Energy calculator.
        | default: fortran
 
@@ -487,6 +487,25 @@ def usage():
     ``calc_nn_dis=[ T | F ]``
      | While you can set the min_nn_dis to add an additional rejection criteria to the initial walker generation, you can use this keyword to keep the rejection criteria on throughout the sampling. This does increase the calculation time of a run and scales exponentially with the number of atoms.
      | default: F
+    
+    ``ACE_json_path=string``
+     | When the ASE_JUL calculator is used, this is the path to the .json file of your ACE potential.
+     | default: None
+    
+    ``ACE_env_path=string``
+     | When the ASE_JUL calculator is used, this is the path to the Julia project that must be setup prior to using this calculator
+     | default: .
+
+    ``ACE_committee=[ T | F ]``
+     | If the ACE potential has a committee of potentials present, you can declare this as true and the uncertainty associated with every configuration produced will be calculated
+     | default: False
+
+    ``min_std=float``
+     | If the ace potential has a committee, and you have set ACE_committee to True, you can choose to reject configurations if the committees predictions have a standard deviation greater than this value in eV
+     | default: np.inf
+
+     ``save_high_std=[ T | F ]``
+     | If the ace potential has a committee, and you have set ACE_committee to True, and you have set a min_std value less than np.inf, you can choose to save configurations that are rejected only because the committee predictions have a standard deviation greater than min_std.
     """
     sys.stderr.write("Usage: %s [ -no_mpi ] < input\n" % sys.argv[0])
     sys.stderr.write("input:\n")
@@ -626,8 +645,13 @@ def usage():
     sys.stderr.write("no_extra_walks_at_all=[ T | F ] (F)\n")
     sys.stderr.write("track_configs=[ T | F ] (F)\n")
     sys.stderr.write("track_configs_write=[ T | F ] (F)\n")
-    sys.stderr.write("min_nn_dis=float, (0.0, reject initial walkers with a nearest neighbour distance less than this value in Angstroms)")
-    sys.stderr.write("calc_nn_dis=[ T | F ], (F, reject walkers with a nearest neighbour distance less than min_nn_dis throughout the entire sampling procedure)")
+    sys.stderr.write("min_nn_dis=float, (0.0, reject initial walkers with a nearest neighbour distance less than this value in Angstroms)\n")
+    sys.stderr.write("calc_nn_dis=[ T | F ], (F, reject walkers with a nearest neighbour distance less than min_nn_dis throughout the entire sampling procedure)\n")
+    sys.stderr.write("ACE_json_path=string, (None, path to the .json file containing the ACE potential to be used with ACE_JUL calculator)\n")
+    sys.stderr.write("ACE_env_path=string, ('.', path to the julia project, which has the required modules to use the ACE calculator\n")
+    sys.stderr.write("ACE_committee=[ T | F ], (F, Declare if the potential has a committee present to calculate the committees standard deviation of energy predictions made on any configuration)\n")
+    sys.stderr.write("min_std=float, (np.inf, choose to reject walked clones if the committees standard deviation of energy predictions is above this value)\n")
+    sys.stderr.write("save_high_std=[ T | F ], (F, Choose to save configurations that were rejected only because of the min_std value, cannot be True if min_std=np.inf)\n")
 
 def excepthook_mpi_abort(exctype, value, tb):
     print( print_prefix,'Uncaught Exception Type:', exctype)
@@ -1043,6 +1067,8 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         pre_MD_extra_data = at.arrays['ns_extra_data'].copy()
 
     pre_MD_E = at.info['ns_energy']
+    
+    #VGF If ACE committee is enabled then calculate uncertainty of config before walking or if present save it for later
     if ns_args['ACE_committee']:
         try:
             pre_uq_val = at.info['committee_std']
@@ -1114,7 +1140,8 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         reject_len = min_bond < ns_args['min_nn_dis']
     else:
         reject_len = False
-    #VGF end
+
+    #VGF calculate the ACE committee standard deviation in energy predictions and maybe reject if min_std provided, if enabled
     if ns_args['ACE_committee']:
         uq_val = at.calc.get_property('co_ene_std', at)
 
@@ -1124,10 +1151,13 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
             reject_uq = False
     else:
         reject_uq = False
+        
     #DOC \item if reject
     if reject_fuzz or reject_Emax or reject_KEmax or reject_len or reject_uq:  # reject
         #DOC \item set positions, velocities, energy back to value before perturbation (maybe should be after?)
         # print(print_prefix, ": WARNING: reject MD traj Emax ", Emax, " initial E ", orig_E, " velo perturbed E ", pre_MD_E, " final E ",final_E, " KEmax ", KEmax, " KE ", final_KE)
+
+        #VGF If configuration is rejected only due to the std value, save this configuration if the user has enabled this
         if not (reject_fuzz or reject_Emax or reject_KEmax or reject_len) and reject_uq and ns_args['save_high_std']:
             at.info['committee_std'] = uq_val
             ase.io.write(f"{ns_args['out_file_prefix']}hole.{rank}.extxyz", at, append=True, parallel=False, format=ns_args['config_file_format'])
@@ -1140,6 +1170,7 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         if ns_args['n_extra_data'] > 0:
             at.arrays['ns_extra_data'][...] = pre_MD_extra_data
         at.info['ns_energy'] = pre_MD_E
+        #VGF if ACE_committee is enabled and walker rejected, revert to old std value 
         if ns_args['ACE_committee']:
             at.info['committee_std'] = pre_uq_val
         n_accept = 0
@@ -1155,6 +1186,8 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
             # TODO: negative of 0 is 0
             at.set_velocities(-at.get_velocities())  # is there a faster way of doing this in ASE?  Can you do at.velocities?
         at.info['ns_energy'] = final_E
+
+        #VGF If ACE_committee option is enabled then save the new std value
         if ns_args['ACE_committee']:
             at.info['committee_std'] = uq_val
         n_accept = 1
@@ -1483,6 +1516,7 @@ def do_cell_step(at, Emax, p_accept, transform):
     new_cell = np.dot(orig_cell,transform)
     new_vol = abs(np.dot(new_cell[0,:],np.cross(new_cell[1,:],new_cell[2,:])))
 
+    #VGF If ACE_commitee is present and enabled, calculate the energy std value before walking
     if ns_args['ACE_committee']:
         try:
             pre_uq_val = at.info['committee_std']
@@ -1525,7 +1559,8 @@ def do_cell_step(at, Emax, p_accept, transform):
                 print( "eval_energy got exception ", err)
             new_energy = 2.0*abs(Emax)
         #print("error in eval_energy setting new_energy = 2*abs(Emax)=" , new_energy)
-        
+
+        #VGF If ACE_commitee is enabled, calculate the energy std, or just set to accept if not enabled
         if ns_args['ACE_committee']:
             uq_val = at.calc.get_property('co_ene_std', at)
             uq_accept = uq_val < ns_args['min_std']
@@ -1535,13 +1570,16 @@ def do_cell_step(at, Emax, p_accept, transform):
         # accept or reject
         if (new_energy < Emax) and uq_accept: # accept
             at.info['ns_energy'] = new_energy
+            #VGF save std value to config
             if ns_args['ACE_committee']:
                 at.info['committee_std'] = uq_val
             return True
         else: # reject and revert
+            #VGF If rejected just because of high std, option for the user to save the config
             if (new_energy < Emax) and ns_args['save_high_std'] and not uq_accept:
                 at.info['committee_std'] = uq_val
                 ase.io.write(f"{ns_args['out_file_prefix']}hole.{rank}.extxyz", at, append=True, parallel=False, format=ns_args['config_file_format'])
+            #VGF If ACE_committee enabled, and walker rejected, set the recorded std value back to previous value
             if ns_args['ACE_committee']:
                 at.info['committee_std'] = pre_uq_val
             at.set_cell(orig_cell,scale_atoms=False)
@@ -3389,7 +3427,7 @@ def main():
                 exit_error("need ASE calculator module name ASE_calc_module\n",1)
 
             do_calc_ASE=True
-
+        #VGF Setup for the ASE_JUL calculator
         elif ns_args['energy_calculator'] == 'ASE_JUL':
             #declare the presence of a committee
             ns_args['ACE_committee'] = str_to_logical(args.pop('ACE_committee', 'F'))
@@ -3720,6 +3758,7 @@ def main():
             if not with_julia:
                 pot = importlib.import_module(ns_args['ASE_calc_module']).calc
 
+            #VGF Create the Julia ACE calculator
             elif with_julia:
                 print("ASE_JUL 4/4: Creating Julia ACE calculator")
                 try:
@@ -3972,7 +4011,7 @@ def main():
                     # random initial positions
                     energy = float('nan')
                     n_try = 0
-                    #VGF added optional nn rejection criteria
+                    #VGF added optional nn and ACE committee energy std rejection criteria
                     reject_len = True
                     reject_uq = True
                     while (n_try < ns_args['random_init_max_n_tries']) and (((math.isnan(energy) or energy > ns_args['start_energy_ceiling'])) or reject_len or reject_uq):
@@ -3992,8 +4031,9 @@ def main():
                             reject_len = min_bond < ns_args['min_nn_dis']
                         else:
                             reject_len = False
-                        #VGF end
+
                         energy = eval_energy(at)
+                        #VGF if ACE committee enabled calculate committee energy std, and potentially reject based on min_std value
                         if ns_args['ACE_committee']:
                             uq_val = at.calc.get_property('co_ene_std', at)
                             reject_uq = uq_val > ns_args['min_std']
@@ -4028,6 +4068,7 @@ def main():
                 at.info['ns_energy'] = rand_perturb_energy(energy, ns_args['random_energy_perturbation'])
                 at.info['volume'] = at.get_volume()
 
+                #VGF If ACE_committee enabled calculate the final energy std value of the initialised walkers
                 if ns_args['ACE_committee']:
                     uq_val = at.calc.get_property('co_ene_std', at)
                     at.info['committee_std'] = uq_val
@@ -4038,7 +4079,6 @@ def main():
                     bonds = np.sort(distances[1], axis=None)
                     min_bond = bonds[len(at)]
                     print('min_bond_final', rank, min_bond)
-                #VGF end
                 
             # Done initialising atomic positions. Now initialise momenta
 
