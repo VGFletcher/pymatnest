@@ -685,9 +685,9 @@ def energy_internal(at):
 
 def eval_energy_PE(at):
     if do_calc_ASE or do_calc_lammps:
-        if do_calc_lammps:
+        #if do_calc_lammps:
             #NB only MD can make crazy positions, so maybe just do this after MD propagation?
-            at.wrap()
+        at.wrap()
         energy = at.get_potential_energy()
     elif do_calc_internal:
         energy = energy_internal(at)
@@ -733,9 +733,9 @@ def eval_energy(at, do_KE=True, do_PE=True):
 
 def eval_forces(at):
     if do_calc_ASE or do_calc_lammps:
-        if do_calc_lammps:
+        #if do_calc_lammps:
             #NB only MD can make crazy positions, so maybe just do this after MD propagation?
-            at.wrap()
+        at.wrap()
         forces = at.get_forces()
     elif do_calc_internal:
         exit_error('no forces for do_calc_internal', 10)
@@ -1043,6 +1043,11 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         pre_MD_extra_data = at.arrays['ns_extra_data'].copy()
 
     pre_MD_E = at.info['ns_energy']
+    if ns_args['ACE_committee']:
+        try:
+            pre_uq_val = at.info['committee_std']
+        except:
+            pre_uq_val = at.calc.get_property('co_ene_std', at)
     #DOC propagate in time atom_traj_len time steps of length MD_atom_timestep
     #DOC
     if movement_args['python_MD']:
@@ -1098,7 +1103,7 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
     #DOC
     reject_Emax = (final_E >= Emax)
     reject_KEmax = (KEmax > 0.0 and final_KE >= KEmax)
-
+    
     #VGF calculate nn_distances and reject if enabled, otherwise skip calculation and dont reject based on nn distance
     if ns_args['calc_nn_dis']:
         distances = ase.geometry.get_distances(at.get_positions(), pbc=True, cell=at.get_cell())
@@ -1110,11 +1115,23 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
     else:
         reject_len = False
     #VGF end
+    if ns_args['ACE_committee']:
+        uq_val = at.calc.get_property('co_ene_std', at)
 
+        if uq_val > ns_args['min_std']:
+            reject_uq = True
+        else:
+            reject_uq = False
+    else:
+        reject_uq = False
     #DOC \item if reject
-    if reject_fuzz or reject_Emax or reject_KEmax or reject_len:  # reject
+    if reject_fuzz or reject_Emax or reject_KEmax or reject_len or reject_uq:  # reject
         #DOC \item set positions, velocities, energy back to value before perturbation (maybe should be after?)
         # print(print_prefix, ": WARNING: reject MD traj Emax ", Emax, " initial E ", orig_E, " velo perturbed E ", pre_MD_E, " final E ",final_E, " KEmax ", KEmax, " KE ", final_KE)
+        if not (reject_fuzz or reject_Emax or reject_KEmax or reject_len) and reject_uq and ns_args['save_high_std']:
+            at.info['committee_std'] = uq_val
+            ase.io.write(f"{ns_args['out_file_prefix']}hole.{rank}.extxyz", at, append=True, parallel=False, format=ns_args['config_file_format'])
+            
         at.set_positions(pre_MD_pos)
         if movement_args['MD_atom_velo_flip_accept']:
             at.set_velocities(pre_MD_velo)  # TODO: should we be redundant in zeroing?
@@ -1123,6 +1140,8 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         if ns_args['n_extra_data'] > 0:
             at.arrays['ns_extra_data'][...] = pre_MD_extra_data
         at.info['ns_energy'] = pre_MD_E
+        if ns_args['ACE_committee']:
+            at.info['committee_std'] = pre_uq_val
         n_accept = 0
     #DOC **else**: (accepted)
     else:  # accept
@@ -1131,10 +1150,13 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         # remember to reverse velocities on acceptance to preserve detailed
         # balance, since velocity is (sometimes) being perturbed, not completely
         # randomized
+        
         if movement_args['MD_atom_velo_flip_accept']:
             # TODO: negative of 0 is 0
             at.set_velocities(-at.get_velocities())  # is there a faster way of doing this in ASE?  Can you do at.velocities?
         at.info['ns_energy'] = final_E
+        if ns_args['ACE_committee']:
+            at.info['committee_std'] = uq_val
         n_accept = 1
 
         #DOC **if** MD\_atom\_velo\_post\_perturb:
@@ -1461,6 +1483,12 @@ def do_cell_step(at, Emax, p_accept, transform):
     new_cell = np.dot(orig_cell,transform)
     new_vol = abs(np.dot(new_cell[0,:],np.cross(new_cell[1,:],new_cell[2,:])))
 
+    if ns_args['ACE_committee']:
+        try:
+            pre_uq_val = at.info['committee_std']
+        except:
+            pre_uq_val = at.calc.get_property('co_ene_std', at)
+
     # check size and shape constraints
     if new_vol > ns_args['max_volume_per_atom']*len(at) or new_vol < ns_args['min_volume_per_atom']*len(at):
         return False
@@ -1474,7 +1502,6 @@ def do_cell_step(at, Emax, p_accept, transform):
 
     # set new positions and velocities
     at.set_cell(new_cell, scale_atoms=True)
-    
     #VGF calculate nn_distances and reject if enabled, otherwise skip calculation and dont reject based on nn distance
     if ns_args['calc_nn_dis']:
         distances = ase.geometry.get_distances(at.get_positions(), pbc=True, cell=at.get_cell())
@@ -1486,7 +1513,6 @@ def do_cell_step(at, Emax, p_accept, transform):
     else:
         accept_len = True
     #VGF end
-    
     if Emax is None:
         return
 
@@ -1499,12 +1525,25 @@ def do_cell_step(at, Emax, p_accept, transform):
                 print( "eval_energy got exception ", err)
             new_energy = 2.0*abs(Emax)
         #print("error in eval_energy setting new_energy = 2*abs(Emax)=" , new_energy)
-
+        
+        if ns_args['ACE_committee']:
+            uq_val = at.calc.get_property('co_ene_std', at)
+            uq_accept = uq_val < ns_args['min_std']
+        else:
+            uq_accept = True
+            
         # accept or reject
-        if new_energy < Emax: # accept
+        if (new_energy < Emax) and uq_accept: # accept
             at.info['ns_energy'] = new_energy
+            if ns_args['ACE_committee']:
+                at.info['committee_std'] = uq_val
             return True
         else: # reject and revert
+            if (new_energy < Emax) and ns_args['save_high_std'] and not uq_accept:
+                at.info['committee_std'] = uq_val
+                ase.io.write(f"{ns_args['out_file_prefix']}hole.{rank}.extxyz", at, append=True, parallel=False, format=ns_args['config_file_format'])
+            if ns_args['ACE_committee']:
+                at.info['committee_std'] = pre_uq_val
             at.set_cell(orig_cell,scale_atoms=False)
             at.set_positions(orig_pos)
             if ns_args['n_extra_data'] > 0:
@@ -3294,12 +3333,24 @@ def main():
         ns_args['random_energy_perturbation'] = float(args.pop('random_energy_perturbation', 1.0e-12))
         ns_args['n_extra_data'] = int(args.pop('n_extra_data', 0))
         ns_args['Z_cell_axis'] = float(args.pop('Z_cell_axis', 10.0))
-        #VGF nn parameters
+        #VGF parameters
+        #Minimum nearest neighbour key words
         ns_args['min_nn_dis'] = float(args.pop('min_nn_dis', 0.0))
         ns_args['calc_nn_dis_init'] = ns_args['min_nn_dis'] > 0.0
-        
         ns_args['calc_nn_dis'] = str_to_logical(args.pop('calc_nn_dis', 'F'))
-        #VGF end nn parameters
+        
+        #energy_calculator ASE_JUL will have to be used for these args to be necessary
+        ns_args['ACE_json_path'] = args.pop('ACE_json_path', None)
+        ns_args['ACE_env_path'] = args.pop('ACE_env_path', '.')
+        #A committee will need to be present within the potential .json file for these args to be necessary
+        ns_args['ACE_committee'] = False #set to false until energy calculator declared
+        ns_args['min_std'] = float(args.pop('min_std', np.inf))
+        #Can't let user save the uncertain configs with an infinite barrier present, all configs ever generated would be saved!
+        if ns_args['min_std'] == np.inf:
+            ns_args['save_high_std'] = False
+        else:
+            ns_args['save_high_std'] = str_to_logical(args.pop('save_high_std', 'F'))
+        #End VGF parameters
 
         # surely there's a cleaner way of doing this?
         try:
@@ -3327,6 +3378,7 @@ def main():
         # parse energy_calculator
         ns_args['energy_calculator'] = args.pop('energy_calculator', 'fortran')
         do_calc_ASE = False
+        with_julia = False
         do_calc_lammps = False
         do_calc_internal = False
         do_calc_fortran = False
@@ -3337,6 +3389,41 @@ def main():
                 exit_error("need ASE calculator module name ASE_calc_module\n",1)
 
             do_calc_ASE=True
+
+        elif ns_args['energy_calculator'] == 'ASE_JUL':
+            #declare the presence of a committee
+            ns_args['ACE_committee'] = str_to_logical(args.pop('ACE_committee', 'F'))
+            
+            if ns_args['ACE_json_path'] is None:
+                exit_error("Require ACE_json_path, the path to your ace potential in .json format, in order to use the ASE Julia calculator", 142)
+            print('ASE_JUL 1/4: Attmpting to import Julia')
+            try:
+                from julia.api import Julia
+                jl = Julia(compiled_modules=False)
+                from julia import Pkg
+                print('ASE_JUL 1/4: Successfully imported Julia')
+            except:
+                exit_error('ASE_JUL 1/4: Failure while importing Julia, please make sure PyJulia is installed', 142)
+
+            if ns_args['ACE_env_path'] == '.':
+                print("Warning: This probably isn't the correct path to your environment but standby...")
+            print(f"ASE_JUL 2/4: Attempting to activate Julia environment at {ns_args['ACE_env_path']}")
+            try:
+                Pkg.activate(ns_args['ACE_env_path'])
+                print("ASE_JUL 2/4: Successfully activated Julia environment")
+            except:
+                exit_error("ASE_JUL 2/4: Failure to activate Julia environment, please make sure you have setup a Julia environment with the required modules, and provided the correct path", 142)
+
+            print("ASE_JUL 3/4: Attempting to import pyjulip")
+            try:
+                import pyjulip
+            except:
+                exit_error("ASE_JUL 3/4: Failure to import pyjulip, please make sure the module is correctly installed", 142)
+
+            print("ASE_JUL 3/4: Successfully imported pyjulip")
+            do_calc_ASE=True
+            with_julia=True
+
         elif ns_args['energy_calculator'] == 'lammps':
             try:
                 from lammpslib import LAMMPSlib
@@ -3630,7 +3717,17 @@ def main():
 
         # initialise potential
         if do_calc_ASE:
-            pot = importlib.import_module(ns_args['ASE_calc_module']).calc
+            if not with_julia:
+                pot = importlib.import_module(ns_args['ASE_calc_module']).calc
+
+            elif with_julia:
+                print("ASE_JUL 4/4: Creating Julia ACE calculator")
+                try:
+                    pot = pyjulip.ACE1(ns_args['ACE_json_path'])
+                except:
+                    exit_error("ASE_JUL 4/4: Failure to create Julia ACE calculator, likely a problem with pyjulip or your julia environment", 142)
+                print("ASE_JUL 4/4: Successfully created Julia ACE calculator. Setup Complete!")
+                
         elif do_calc_internal or do_calc_fortran:
             pass
         elif do_calc_lammps:
@@ -3877,7 +3974,8 @@ def main():
                     n_try = 0
                     #VGF added optional nn rejection criteria
                     reject_len = True
-                    while (n_try < ns_args['random_init_max_n_tries']) and (((math.isnan(energy) or energy > ns_args['start_energy_ceiling'])) or reject_len):
+                    reject_uq = True
+                    while (n_try < ns_args['random_init_max_n_tries']) and (((math.isnan(energy) or energy > ns_args['start_energy_ceiling'])) or reject_len or reject_uq):
                         at.set_scaled_positions( rng.float_uniform(0.0, 1.0, (len(at), 3) ) )
                         if movement_args['2D']:  # zero the Z coordiates in a 2D simulation
                             temp_at=at.get_positions()
@@ -3896,6 +3994,11 @@ def main():
                             reject_len = False
                         #VGF end
                         energy = eval_energy(at)
+                        if ns_args['ACE_committee']:
+                            uq_val = at.calc.get_property('co_ene_std', at)
+                            reject_uq = uq_val > ns_args['min_std']
+                        else:
+                            reject_uq = False
                         n_try += 1
 
                     if math.isnan(energy) or energy > ns_args['start_energy_ceiling'] or reject_len:
@@ -3924,6 +4027,11 @@ def main():
                 energy = eval_energy(at)
                 at.info['ns_energy'] = rand_perturb_energy(energy, ns_args['random_energy_perturbation'])
                 at.info['volume'] = at.get_volume()
+
+                if ns_args['ACE_committee']:
+                    uq_val = at.calc.get_property('co_ene_std', at)
+                    at.info['committee_std'] = uq_val
+                    print('init_uq', uq_val)
                 #VGF if nn rejection criteria enabled, print the final smallest nearest neighbour distance
                 if ns_args['calc_nn_dis_init']:
                     distances = ase.geometry.get_distances(at.get_positions())
