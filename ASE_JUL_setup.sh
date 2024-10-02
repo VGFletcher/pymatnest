@@ -33,6 +33,7 @@ echo -e "Provided path: $julia_env"
 if [ -z $julia_env ]
 then
     echo -e "No path provided, please provide a path"
+    exit
 fi
 
 echo -e "Attempting to create project at given path..."
