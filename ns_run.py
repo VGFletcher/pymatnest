@@ -1,4 +1,4 @@
-import re, math, time, os
+import re, math, time, os, glob
 import pprint
 import numpy as np, ase, ase.io
 import ns_rng
@@ -2469,11 +2469,16 @@ def save_snapshot(snapshot_id):
 
 def clean_prev_snapshot(iter):
     if iter is not None and ns_args['snapshot_clean']:
-        snapshot_file=ns_args['out_file_prefix']+'snapshot.%d.%d.%s' % (iter, rank, ns_args['config_file_format'])
-        try:
-            os.remove(snapshot_file)
-        except:
-            print( print_prefix, ": WARNING: Failed to delete '%s'" % snapshot_file)
+        snap_files = glob.glob(f"{ns_args['out_file_prefix']}snapshot.*")
+        for path in snap_files:
+            fname = os.path.basename(path)
+            group = re.match(f"{ns_args['out_file_prefix'][:-1]}\.snapshot\.([0-9]+)\..*", fname)
+            it_num = int(group.group(1))
+            if it_num < iter:
+                os.remove(path)
+            else:
+                continue
+    return
 
 
 def do_ns_loop():
@@ -2555,8 +2560,8 @@ def do_ns_loop():
         converge_down_to_beta = 1.0/(ns_args['kB']*ns_args['converge_down_to_T'])
         log_Z_term_max = np.NINF
 
-    prev_snapshot_iter = None
-    pprev_snapshot_iter = None
+    #prev_snapshot_iter = None
+    #pprev_snapshot_iter = None
     last_snapshot_time = time.time()
 
     # for estimating current temperature from d log Omega / d E
@@ -3182,9 +3187,9 @@ def do_ns_loop():
         if do_snapshot:
             save_snapshot(i_ns_step)
             last_snapshot_time = time.time()
-            clean_prev_snapshot(pprev_snapshot_iter)
-            pprev_snapshot_iter = prev_snapshot_iter
-            prev_snapshot_iter = i_ns_step
+            clean_prev_snapshot(i_ns_step)
+            #pprev_snapshot_iter = prev_snapshot_iter
+            #prev_snapshot_iter = i_ns_step
 
         if ns_analyzers is not None:
             for (ns_analyzer, ns_analyzer_interval) in ns_analyzers:
@@ -3381,13 +3386,16 @@ def main():
         ns_args['ACE_json_path'] = args.pop('ACE_json_path', None)
         ns_args['ACE_env_path'] = args.pop('ACE_env_path', '.')
         #A committee will need to be present within the potential .json file for these args to be necessary
-        ns_args['ACE_committee'] = False #set to false until energy calculator declared
+        ns_args['ACE_committee'] = str_to_logical(args.pop('ACE_committee', 'F'))
         ns_args['min_std'] = float(args.pop('min_std', np.inf))
+        ns_args['save_high_std'] = str_to_logical(args.pop('save_high_std', 'F'))
+
+        #Can't use related options with no committee
+        if not ns_args['ACE_committee']:
+            ns_args['min_std'] = np.inf
         #Can't let user save the uncertain configs with an infinite barrier present, all configs ever generated would be saved!
         if ns_args['min_std'] == np.inf:
             ns_args['save_high_std'] = False
-        else:
-            ns_args['save_high_std'] = str_to_logical(args.pop('save_high_std', 'F'))
         #End VGF parameters
 
         # surely there's a cleaner way of doing this?
