@@ -2469,6 +2469,9 @@ def save_snapshot(snapshot_id):
 
 def clean_prev_snapshot(iter):
     if iter is not None and ns_args['snapshot_clean']:
+        if comm is not None:
+            if rank != 0:
+                return
         snap_files = glob.glob(f"{ns_args['out_file_prefix']}snapshot.*")
         for path in snap_files:
             fname = os.path.basename(path)
