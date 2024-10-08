@@ -3440,8 +3440,6 @@ def main():
             do_calc_ASE=True
         #VGF Setup for the ASE_JUL calculator
         elif ns_args['energy_calculator'] == 'ASE_JUL':
-            #declare the presence of a committee
-            ns_args['ACE_committee'] = str_to_logical(args.pop('ACE_committee', 'F'))
             
             if ns_args['ACE_json_path'] is None:
                 exit_error("Require ACE_json_path, the path to your ace potential in .json format, in order to use the ASE Julia calculator", 142)
