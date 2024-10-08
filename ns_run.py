@@ -2691,7 +2691,7 @@ def do_ns_loop():
                     walker_copy.info['volume'] = walker_copy.get_volume()
                     walker_copy.info['ns_P'] = movement_args['MC_cell_P']
                     walker_copy.info['iter'] = i_ns_step
-                    walker_copy.info['config_type']  = "config_{}".format(i_ns_step) #VF ADDED for ACEFIT test-train
+                    walker_copy.info['config_type']  = ns_args['out_file_prefix'][:-1] #VGF ADDED for ACEFIT test-train info
                     walker_copy.info['config_n_global'] = global_n
                     if walker_copy.has('masses') and walker_copy.has('momenta'):
                         walker_copy.info['ns_KE'] = walker_copy.get_kinetic_energy()
