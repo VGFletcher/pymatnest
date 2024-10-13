@@ -501,11 +501,24 @@ def usage():
      | default: False
 
     ``min_std=float``
-     | If the ace potential has a committee, and you have set ACE_committee to True, you can choose to reject configurations if the committees predictions have a standard deviation greater than this value in eV
+     | If the ACE potential has a committee, and you have set ACE_committee to True, you can choose to reject configurations if the committees predictions have a standard deviation greater than this value in eV
      | default: np.inf
 
      ``save_high_std=[ T | F ]``
-     | If the ace potential has a committee, and you have set ACE_committee to True, and you have set a min_std value less than np.inf, you can choose to save configurations that are rejected only because the committee predictions have a standard deviation greater than min_std.
+     | If the ACE potential has a committee, and you have set ACE_committee to True, and you have set a min_std value less than np.inf, you can choose to save configurations that are rejected only because the committee predictions have a standard deviation greater than min_std.
+     | default: False
+    
+     ``committee_std_stopping_criteria=[ T | F ]``
+     | If the ACE potential has a committee, and you have set ACE_committee to True, you can choose to stop a nested sampling calculation when a fraction of the walkers (committee_std_frac) have a committee_std greater than committee_std_barrier. Other stopping criteria can be enabled simultaneously.
+     | default: False
+
+     ``committee_std_barrier=float``
+     | committee_std_frac of walkers must have a committee std greater than this value (in eV) to stop the nested sampling run.
+     | default: np.inf
+
+     ``committee_std_frac=float``
+     | The fraction of walkers that must have committee_std greater than the committee_std_barrier to stop the nested sampling run.
+     | default: 1.0
     """
     sys.stderr.write("Usage: %s [ -no_mpi ] < input\n" % sys.argv[0])
     sys.stderr.write("input:\n")
@@ -652,6 +665,9 @@ def usage():
     sys.stderr.write("ACE_committee=[ T | F ], (F, Declare if the potential has a committee present to calculate the committees standard deviation of energy predictions made on any configuration)\n")
     sys.stderr.write("min_std=float, (np.inf, choose to reject walked clones if the committees standard deviation of energy predictions is above this value)\n")
     sys.stderr.write("save_high_std=[ T | F ], (F, Choose to save configurations that were rejected only because of the min_std value, cannot be True if min_std=np.inf)\n")
+    sys.stderr.write("committee_std_stopping_criteria=[ T | F ], (F, Choose to enable a stopping criteria based on the fraction of walkers above a committee std barrier)\n")
+    sys.stderr.write("committee_std_barrier=float, (np.inf, if using committee_std_stopping_criteria, this is the value above which committee_std_frac of walkers must be to stop the run)\n")
+    sys.stderr.write("committee_std_frac=float, (1.0, if using committee_std_stopping_criteria, this the fraction of walkers whose committee std must be above committee_std_barrier to stop the run)\n")
 
 def excepthook_mpi_abort(exctype, value, tb):
     print( print_prefix,'Uncaught Exception Type:', exctype)
@@ -709,8 +725,7 @@ def energy_internal(at):
 
 def eval_energy_PE(at):
     if do_calc_ASE or do_calc_lammps:
-        #if do_calc_lammps:
-            #NB only MD can make crazy positions, so maybe just do this after MD propagation?
+        #NB only MD can make crazy positions, so maybe just do this after MD propagation?
         at.wrap()
         energy = at.get_potential_energy()
     elif do_calc_internal:
@@ -757,8 +772,7 @@ def eval_energy(at, do_KE=True, do_PE=True):
 
 def eval_forces(at):
     if do_calc_ASE or do_calc_lammps:
-        #if do_calc_lammps:
-            #NB only MD can make crazy positions, so maybe just do this after MD propagation?
+        #NB only MD can make crazy positions, so maybe just do this after MD propagation?
         at.wrap()
         forces = at.get_forces()
     elif do_calc_internal:
@@ -1160,7 +1174,7 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         #VGF If configuration is rejected only due to the std value, save this configuration if the user has enabled this
         if not (reject_fuzz or reject_Emax or reject_KEmax or reject_len) and reject_uq and ns_args['save_high_std']:
             at.info['committee_std'] = uq_val
-            ase.io.write(f"{ns_args['out_file_prefix']}hole.{rank}.extxyz", at, append=True, parallel=False, format=ns_args['config_file_format'])
+            ase.io.write(f"{ns_args['out_file_prefix']}hole.{rank}.{ns_args['config_file_format']}", at, append=True, parallel=False, format=ns_args['config_file_format'])
             
         at.set_positions(pre_MD_pos)
         if movement_args['MD_atom_velo_flip_accept']:
@@ -1516,7 +1530,7 @@ def do_cell_step(at, Emax, p_accept, transform):
     new_cell = np.dot(orig_cell,transform)
     new_vol = abs(np.dot(new_cell[0,:],np.cross(new_cell[1,:],new_cell[2,:])))
 
-    #VGF If ACE_commitee is present and enabled, calculate the energy std value before walking
+    #VGF If ACE_committee is present and enabled, calculate the energy std value before walking
     if ns_args['ACE_committee']:
         try:
             pre_uq_val = at.info['committee_std']
@@ -1560,7 +1574,7 @@ def do_cell_step(at, Emax, p_accept, transform):
             new_energy = 2.0*abs(Emax)
         #print("error in eval_energy setting new_energy = 2*abs(Emax)=" , new_energy)
 
-        #VGF If ACE_commitee is enabled, calculate the energy std, or just set to accept if not enabled
+        #VGF If ACE_committee is enabled, calculate the energy std, or just set to accept if not enabled
         if ns_args['ACE_committee']:
             uq_val = at.calc.get_property('co_ene_std', at)
             uq_accept = uq_val < ns_args['min_std']
@@ -1578,7 +1592,7 @@ def do_cell_step(at, Emax, p_accept, transform):
             #VGF If rejected just because of high std, option for the user to save the config
             if (new_energy < Emax) and ns_args['save_high_std'] and not uq_accept:
                 at.info['committee_std'] = uq_val
-                ase.io.write(f"{ns_args['out_file_prefix']}hole.{rank}.extxyz", at, append=True, parallel=False, format=ns_args['config_file_format'])
+                ase.io.write(f"{ns_args['out_file_prefix']}hole.{rank}.{ns_args['config_file_format']}", at, append=True, parallel=False, format=ns_args['config_file_format'])
             #VGF If ACE_committee enabled, and walker rejected, set the recorded std value back to previous value
             if ns_args['ACE_committee']:
                 at.info['committee_std'] = pre_uq_val
@@ -2470,6 +2484,8 @@ def save_snapshot(snapshot_id):
 def clean_prev_snapshot(iter):
     if iter is not None and ns_args['snapshot_clean']:
         if comm is not None:
+            #Add barrier to make sure all threads have written their snapshots before deleting
+            comm.barrier()
             if rank != 0:
                 return
         snap_files = glob.glob(f"{ns_args['out_file_prefix']}snapshot.*")
@@ -2641,6 +2657,40 @@ def do_ns_loop():
                     print(print_prefix, "Leaving loop because Z(%f) is converged" % ns_args['converge_down_to_T'])
                 i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
                 break
+
+        if ns_args['committee_std_stopping_criteria'] and (i_ns_step % 500 == 0):
+            com_stds = []
+            for at in walkers:
+                try:
+                    co_std = at.info['committee_std']
+                    com_stds.append(co_std)
+                except:
+                    co_std = at.calc.get_property('co_ene_std', at)
+                    at.info['committee_std'] = co_std
+                    com_stds.append(co_std)
+
+            across_boundary = sum(np.array(com_stds) > ns_args['committee_std_barrier'])
+            if comm is not None:
+                total_across_boundary = np.empty((1),dtype=int)
+                comm.Allreduce(across_boundary, total_across_boundary, op=MPI.SUM)
+
+                fraction_across = total_across_boundary[0]/ns_args['n_walkers']
+                if fraction_across >= ns_args['committee_std_frac']:
+                    if rank == 0:
+                        print(f"Leaving loop because {total_across_boundary[0]} of {ns_args['n_walkers']} walkers, {fraction_across}, are across the committee_std_barrier")
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
+                else:
+                    if rank == 0:
+                        print(f"Current fraction above committee_std_barrier: {total_across_boundary[0]} of {ns_args['n_walkers']}, {fraction_across}")
+            else:
+                fraction_across = across_boundary/ns_args['n_walkers']
+                if fraction_across >= ns_args['committee_std_frac']:
+                    print(f"Leaving loop because {across_boundary} of {ns_args['n_walkers']} walkers, {fraction_across}, are across the committee_std_barrier")
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
+                else:
+                    print(f"Current fraction above committee_std_barrier: {across_boundary} of {ns_args['n_walkers']}, {fraction_across}")
 
         if ns_args['T_estimate_finite_diff_lag'] > 0:
             Emax_history.append(Emax_of_step)
@@ -3393,12 +3443,19 @@ def main():
         ns_args['min_std'] = float(args.pop('min_std', np.inf))
         ns_args['save_high_std'] = str_to_logical(args.pop('save_high_std', 'F'))
 
+        ns_args['committee_std_stopping_criteria'] = str_to_logical(args.pop('committee_std_stopping_criteria', 'F'))
+        ns_args['committee_std_barrier'] = float(args.pop('committee_std_barrier',np.inf))
+        ns_args['committee_std_frac'] = float(args.pop('committee_std_frac',1.0))
         #Can't use related options with no committee
         if not ns_args['ACE_committee']:
             ns_args['min_std'] = np.inf
+            ns_args['committee_std_stopping_criteria'] = False
         #Can't let user save the uncertain configs with an infinite barrier present, all configs ever generated would be saved!
         if ns_args['min_std'] == np.inf:
             ns_args['save_high_std'] = False
+        #If barrier for stopping is infinity, or higher than allowed std, then no point in checking
+        if (ns_args['committee_std_barrier'] == np.inf) or (ns_args['min_std'] < ns_args['committee_std_barrier']):
+            ns_args['committee_std_stopping_criteria'] = False
         #End VGF parameters
 
         # surely there's a cleaner way of doing this?
@@ -4120,7 +4177,7 @@ def main():
             for r in range(size):
                 if rank == r:
                     walkers = at_list[r*n_walkers:(r+1)*n_walkers]  # TODO: RBW – split walkers on different processes? maybe we need to set things up (energies?) before splitting?
-                    print(rank, r, walkers)
+                    #print(rank, r, walkers)
             for at in walkers:
                 if np.any(at.get_atomic_numbers()
                           != walkers[0].get_atomic_numbers()):
@@ -4294,50 +4351,30 @@ def main():
                 track_traj_io = None
         else:  # restart, so the existing file should be appended
             # concatenate existing traj file to before restart
-            print(rank, "truncating traj file to start_first_iter",
-                  start_first_iter)
-            mode = "r+"
-            if movement_args['keep_atoms_fixed'] > 0:
-                mode = "a+"
-            with open(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']), mode) as f:
-                prev_pos = None
-                # loop this way with "while True" and "f.readline()" because directly looping over f does not 
-                # set position reported by f.tell() to end of line
-                # make sure there's somplace to truncate to if traj file has only one config and it's already too late
-                prev_pos = 0
-                prev_prev_pos = 0
-                while True:
-                    l = f.readline()
-                    if not l:
-                        break
-                    m = re.search(r"\biter=(\d+)\b", l)
-                    if m is not None:
-                        cur_iter = int(m.group(1))
-                        if cur_iter >= start_first_iter:
-                            # rewind back to two lines back, before start of this config
-                            f.seek(prev_prev_pos)
-                            f.truncate()
-                            break
-                    prev_prev_pos = prev_pos
-                    prev_pos = f.tell()
+            print(rank, "truncating traj file to start_first_iter", start_first_iter)
+
+            #Open traj file and loop through it backwards (shorter loop length)
+            strucs = ase.io.read(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']), index=':', parallel=False)
+            last_deleted = None
+            for i in reversed(range(len(strucs))):
+                cur_iter = strucs[i].info['iter']
+                if cur_iter > start_first_iter:
+                    last_deleted = cur_iter
+                    del strucs[i]
+                else:
+                    print('last deleted:', last_deleted, 'stopped at:', cur_iter)
+                    break
+            #write the shortened file to a temporary new file, so if there is an issue the old data isn't destroyed
+            ase.io.write(ns_args['out_file_prefix']+'traj.%d.%s.trunc' % (rank, ns_args['config_file_format']), strucs, parallel=False, format=ns_args['config_file_format'])
+            #Remove original file, now data safely saved
+            os.remove(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']))
+            #Rename new file to old file name
+            os.rename(ns_args['out_file_prefix']+'traj.%d.%s.trunc' % (rank, ns_args['config_file_format']), ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']))
             traj_io = open(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']), "a")
             if ns_args['track_configs'] and ns_args['track_configs_write']:
                 track_traj_io = open(ns_args['out_file_prefix']+'track_traj.%d.%s' % (rank, ns_args['config_file_format']), "a")
             else:
                 track_traj_io = None
-
-            # Read the existing traj file and look for the point where we restart from. Truncate the rest.
-            # This part is not used because the ASE.io.read takes soooo long, that it makes a restart impossible.
-            #traj_io = open(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']), "r+")
-            #i = 0
-            #while True:
-            #    at=(ase.io.read(traj_io, format=ns_args['config_file_format'],index=i))
-            #   print("ASE.io.read trajectory", rank, i, at.info['iter'])
-            #    if at.info['iter'] >= start_first_iter:
-            #         at=(ase.io.read(traj_io, format=ns_args['config_file_format'],index=i-1))
-            #         traj_io.truncate()
-            #         break
-            #    i += 1
 
         sys.stdout.flush()
         if ns_args['E_dump_interval'] > 0 and rank == 0:
