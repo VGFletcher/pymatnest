@@ -4354,22 +4354,29 @@ def main():
             print(rank, "truncating traj file to start_first_iter", start_first_iter)
 
             #Open traj file and loop through it backwards (shorter loop length)
-            strucs = ase.io.read(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']), index=':', parallel=False)
-            last_deleted = None
-            for i in reversed(range(len(strucs))):
-                cur_iter = strucs[i].info['iter']
-                if cur_iter > start_first_iter:
-                    last_deleted = cur_iter
-                    del strucs[i]
-                else:
-                    print('last deleted:', last_deleted, 'stopped at:', cur_iter)
-                    break
-            #write the shortened file to a temporary new file, so if there is an issue the old data isn't destroyed
-            ase.io.write(ns_args['out_file_prefix']+'traj.%d.%s.trunc' % (rank, ns_args['config_file_format']), strucs, parallel=False, format=ns_args['config_file_format'])
-            #Remove original file, now data safely saved
-            os.remove(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']))
-            #Rename new file to old file name
-            os.rename(ns_args['out_file_prefix']+'traj.%d.%s.trunc' % (rank, ns_args['config_file_format']), ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']))
+            try:
+                strucs = ase.io.read(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']), index=':', parallel=False)
+                empty_file = False
+            except:
+                empty_file = True
+
+            if not empty_file:
+                last_deleted = None
+                for i in reversed(range(len(strucs))):
+                    cur_iter = strucs[i].info['iter']
+                    if cur_iter > start_first_iter:
+                        last_deleted = cur_iter
+                        del strucs[i]
+                    else:
+                        print('last deleted:', last_deleted, 'stopped at:', cur_iter)
+                        break
+                #write the shortened file to a temporary new file, so if there is an issue the old data isn't destroyed
+                ase.io.write(ns_args['out_file_prefix']+'traj.%d.%s.trunc' % (rank, ns_args['config_file_format']), strucs, parallel=False, format=ns_args['config_file_format'])
+                #Remove original file, now data safely saved
+                os.remove(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']))
+                #Rename new file to old file name
+                os.rename(ns_args['out_file_prefix']+'traj.%d.%s.trunc' % (rank, ns_args['config_file_format']), ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']))
+
             traj_io = open(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']), "a")
             if ns_args['track_configs'] and ns_args['track_configs_write']:
                 track_traj_io = open(ns_args['out_file_prefix']+'track_traj.%d.%s' % (rank, ns_args['config_file_format']), "a")
