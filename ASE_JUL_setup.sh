@@ -75,7 +75,7 @@ fi
 
 #5) Final setup
 echo -e "Attempting final setup of PyJulip..."
-git clone https://github.com/casv2/pyjulip.git
+git clone https://github.com/VGFletcher/pyjulip.git
 cd pyjulip
 pip install .
 
