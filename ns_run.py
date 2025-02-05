@@ -4364,7 +4364,7 @@ def main():
                 last_deleted = None
                 for i in reversed(range(len(strucs))):
                     cur_iter = strucs[i].info['iter']
-                    if cur_iter > start_first_iter:
+                    if cur_iter >= start_first_iter:
                         last_deleted = cur_iter
                         del strucs[i]
                     else:
