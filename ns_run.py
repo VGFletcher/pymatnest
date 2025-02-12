@@ -1193,10 +1193,17 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         z_position_in_box = sum((z_position_of_moving_atom_all < upper_bound_z) & (z_position_of_moving_atom_all > lower_bound_z))
         if z_position_in_box % len(z_position_of_moving_atom_all) != 0:
             reject_wall = True
-        elif z_position_in_box == 0 and ns_args['exclude_z'] == 'exterior':
-            reject_wall = True
-        elif z_position_in_box == len(z_position_of_moving_atom_all) and ns_args['exclude_z'] == 'interior':
-            reject_wall = True
+        else:
+            if z_position_in_box == 0:
+                reject_wall = True
+            else:
+                reject_wall = False
+            if ns_args['exclude_z'] == 'interior':
+                reject_wall = not reject_wall
+            #if z_position_in_box == 0 and ns_args['exclude_z'] == 'exterior':
+            #    reject_wall = True
+            #elif z_position_in_box == len(z_position_of_moving_atom_all) and ns_args['exclude_z'] == 'interior':
+            #    reject_wall = True
     #BRIGHT END
 
     #DOC \item if reject
