@@ -497,28 +497,40 @@ def usage():
      | default: .
 
     ``ACE_committee=[ T | F ]``
-     | If the ACE potential has a committee of potentials present, you can declare this as true and the committee STD per atom associated with every configuration produced will be calculated
+     | If the ACE potential has a committee of potentials present, you can declare this as true and the uncertainty associated with every configuration produced will be calculated
      | default: False
 
     ``min_std=float``
-     | If the ACE potential has a committee, and you have set ACE_committee to True, you can choose to reject configurations if the committees predictions have a standard deviation per atom greater than this value in eV/atom
+     | If the ACE potential has a committee, and you have set ACE_committee to True, you can choose to reject configurations if the committees predictions have a standard deviation greater than this value in eV
      | default: np.inf
 
      ``save_high_std=[ T | F ]``
-     | If the ACE potential has a committee, and you have set ACE_committee to True, and you have set a min_std value less than np.inf, you can choose to save configurations that are rejected only because the committee predictions have a standard deviation per atom greater than min_std.
+     | If the ACE potential has a committee, and you have set ACE_committee to True, and you have set a min_std value less than np.inf, you can choose to save configurations that are rejected only because the committee predictions have a standard deviation greater than min_std.
      | default: False
     
      ``committee_std_stopping_criteria=[ T | F ]``
-     | If the ACE potential has a committee, and you have set ACE_committee to True, you can choose to stop a nested sampling calculation when a fraction of the walkers (committee_std_frac) have a committee STD per atom greater than committee_std_barrier. Other stopping criteria can be enabled simultaneously.
+     | If the ACE potential has a committee, and you have set ACE_committee to True, you can choose to stop a nested sampling calculation when a fraction of the walkers (committee_std_frac) have a committee_std greater than committee_std_barrier. Other stopping criteria can be enabled simultaneously.
      | default: False
 
      ``committee_std_barrier=float``
-     | committee_std_frac of walkers must have a committee STD per atom greater than this value (in eV/atom) to stop the nested sampling run.
+     | committee_std_frac of walkers must have a committee std greater than this value (in eV) to stop the nested sampling run.
      | default: np.inf
 
      ``committee_std_frac=float``
-     | The fraction of walkers that must have a committee STD per atom greater than the committee_std_barrier to stop the nested sampling run.
+     | The fraction of walkers that must have committee_std greater than the committee_std_barrier to stop the nested sampling run.
      | default: 1.0
+
+     ``MD_wall_Z=[ T | F ]``
+     | Rejection of configurations in which a moving atom(s) is outside the defined region.
+     | default: False
+
+     ``upper_bound_wall=float``
+     | upper bound of the allowed Z value
+     | default: np.inf
+
+     ``lower_bound_wall=float``
+     | lower bound of the allowed Z value
+     | default: 0
     """
     sys.stderr.write("Usage: %s [ -no_mpi ] < input\n" % sys.argv[0])
     sys.stderr.write("input:\n")
@@ -901,7 +913,6 @@ def gen_random_velo(at, KEmax, unit_rv=None):
     # zero velocities of fixed atoms (these were not taken into account in the nDOF)
     if movement_args['keep_atoms_fixed'] > 0:
         velocities[:movement_args['keep_atoms_fixed']]=0.0
-
     return velocities
 
 
@@ -1087,7 +1098,7 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         try:
             pre_uq_val = at.info['committee_std']
         except:
-            pre_uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+            pre_uq_val = at.calc.get_property('co_ene_std', at)
     #DOC propagate in time atom_traj_len time steps of length MD_atom_timestep
     #DOC
     if movement_args['python_MD']:
@@ -1157,7 +1168,7 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
 
     #VGF calculate the ACE committee standard deviation in energy predictions and maybe reject if min_std provided, if enabled
     if ns_args['ACE_committee']:
-        uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+        uq_val = at.calc.get_property('co_ene_std', at)
 
         if uq_val > ns_args['min_std']:
             reject_uq = True
@@ -1165,9 +1176,27 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
             reject_uq = False
     else:
         reject_uq = False
-        
+
+    #BRIGHT reject if outside the defined area
+    if ns_args['MD_wall_Z']:
+        reject_wall = False
+        if movement_args['keep_atoms_fixed'] > 0:
+            moving_atoms = at[movement_args['keep_atoms_fixed']:]
+        else:
+            moving_atoms = at
+        position_of_moving_atom = moving_atoms.get_positions(wrap=True)
+        for at_mv_idx in range(len(moving_atoms)):
+            z_position_of_moving_atom = position_of_moving_atom[at_mv_idx][2]
+            if ns_args['upper_bound_wall'] >= ns_args['lower_bound_wall']:
+                if z_position_of_moving_atom > ns_args['upper_bound_wall'] or z_position_of_moving_atom < ns_args['lower_bound_wall']:
+                    reject_wall = True
+            elif ns_args['upper_bound_wall'] < ns_args['lower_bound_wall']:
+                if z_position_of_moving_atom > ns_args['upper_bound_wall'] and z_position_of_moving_atom < ns_args['lower_bound_wall']:
+                    reject_wall = True
+    #BRIGHT END
+
     #DOC \item if reject
-    if reject_fuzz or reject_Emax or reject_KEmax or reject_len or reject_uq:  # reject
+    if reject_fuzz or reject_Emax or reject_KEmax or reject_len or reject_uq or reject_wall:  # reject
         #DOC \item set positions, velocities, energy back to value before perturbation (maybe should be after?)
         # print(print_prefix, ": WARNING: reject MD traj Emax ", Emax, " initial E ", orig_E, " velo perturbed E ", pre_MD_E, " final E ",final_E, " KEmax ", KEmax, " KE ", final_KE)
 
@@ -1535,7 +1564,7 @@ def do_cell_step(at, Emax, p_accept, transform):
         try:
             pre_uq_val = at.info['committee_std']
         except:
-            pre_uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+            pre_uq_val = at.calc.get_property('co_ene_std', at)
 
     # check size and shape constraints
     if new_vol > ns_args['max_volume_per_atom']*len(at) or new_vol < ns_args['min_volume_per_atom']*len(at):
@@ -1576,7 +1605,7 @@ def do_cell_step(at, Emax, p_accept, transform):
 
         #VGF If ACE_committee is enabled, calculate the energy std, or just set to accept if not enabled
         if ns_args['ACE_committee']:
-            uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+            uq_val = at.calc.get_property('co_ene_std', at)
             uq_accept = uq_val < ns_args['min_std']
         else:
             uq_accept = True
@@ -2665,7 +2694,7 @@ def do_ns_loop():
                     co_std = at.info['committee_std']
                     com_stds.append(co_std)
                 except:
-                    co_std = at.calc.get_property('co_ene_std', at)/len(at)
+                    co_std = at.calc.get_property('co_ene_std', at)
                     at.info['committee_std'] = co_std
                     com_stds.append(co_std)
 
@@ -3457,6 +3486,12 @@ def main():
         if (ns_args['committee_std_barrier'] == np.inf) or (ns_args['min_std'] < ns_args['committee_std_barrier']):
             ns_args['committee_std_stopping_criteria'] = False
         #End VGF parameters
+        
+        #BRIGHT ASE Z wall parameters
+        ns_args['MD_wall_Z'] = str_to_logical(args.pop('MD_wall_Z', 'F'))
+        ns_args['upper_bound_wall'] = float(args.pop('upper_bound_wall',np.inf))
+        ns_args['lower_bound_wall'] = float(args.pop('lower_bound_wall',0))
+        #BRIGHT END
 
         # surely there's a cleaner way of doing this?
         try:
@@ -4101,7 +4136,7 @@ def main():
                         energy = eval_energy(at)
                         #VGF if ACE committee enabled calculate committee energy std, and potentially reject based on min_std value
                         if ns_args['ACE_committee']:
-                            uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+                            uq_val = at.calc.get_property('co_ene_std', at)
                             reject_uq = uq_val > ns_args['min_std']
                         else:
                             reject_uq = False
@@ -4136,7 +4171,7 @@ def main():
 
                 #VGF If ACE_committee enabled calculate the final energy std value of the initialised walkers
                 if ns_args['ACE_committee']:
-                    uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+                    uq_val = at.calc.get_property('co_ene_std', at)
                     at.info['committee_std'] = uq_val
                     print('init_uq', uq_val)
                 #VGF if nn rejection criteria enabled, print the final smallest nearest neighbour distance
@@ -4213,7 +4248,10 @@ def main():
                     at.info['volume'] = at.get_volume()
 
             if movement_args['do_velocities']:
-                KEmax = walkers[0].info['KEmax']
+                if movement_args['do_velocities']:
+                #BRIGHT Assign KEmax if starting the simulation from restart file (i.e. iter=-1)
+                    KEmax = 1.5*len(walkers[0])*ns_args['kB']*ns_args['KEmax_max_T']
+                #BRIGHT END
             else:
                 KEmax = -1.0
 
@@ -4364,7 +4402,7 @@ def main():
                 last_deleted = None
                 for i in reversed(range(len(strucs))):
                     cur_iter = strucs[i].info['iter']
-                    if cur_iter >= start_first_iter:
+                    if cur_iter > start_first_iter:
                         last_deleted = cur_iter
                         del strucs[i]
                     else:
