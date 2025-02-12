@@ -521,16 +521,20 @@ def usage():
      | default: 1.0
 
      ``MD_wall_Z=[ T | F ]``
-     | Rejection of configurations in which a moving atom(s) is outside the defined region.
+     | Rejection of configurations in which a moving atom(s) is outside/inside the defined region.
      | default: False
 
-     ``upper_bound_wall=float``
-     | upper bound of the allowed Z value
+     ``boundary_z1=float``
+     | First z boundary
      | default: np.inf
 
-     ``lower_bound_wall=float``
-     | lower bound of the allowed Z value
+     ``boundary_z2=float``
+     | Second z boundary
      | default: 0
+
+     ``exclude_z=[ exterior | interior ]``
+     | Rejection of configurations in which a moving atom(s) is outside (exterior) or inside (interior) the defined boundaries.
+     | default: exterior
     """
     sys.stderr.write("Usage: %s [ -no_mpi ] < input\n" % sys.argv[0])
     sys.stderr.write("input:\n")
@@ -1178,21 +1182,21 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         reject_uq = False
 
     #BRIGHT reject if outside the defined area
+    reject_wall = False
     if ns_args['MD_wall_Z']:
-        reject_wall = False
         if movement_args['keep_atoms_fixed'] > 0:
             moving_atoms = at[movement_args['keep_atoms_fixed']:]
         else:
             moving_atoms = at
         position_of_moving_atom = moving_atoms.get_positions(wrap=True)
-        for at_mv_idx in range(len(moving_atoms)):
-            z_position_of_moving_atom = position_of_moving_atom[at_mv_idx][2]
-            if ns_args['upper_bound_wall'] >= ns_args['lower_bound_wall']:
-                if z_position_of_moving_atom > ns_args['upper_bound_wall'] or z_position_of_moving_atom < ns_args['lower_bound_wall']:
-                    reject_wall = True
-            elif ns_args['upper_bound_wall'] < ns_args['lower_bound_wall']:
-                if z_position_of_moving_atom > ns_args['upper_bound_wall'] and z_position_of_moving_atom < ns_args['lower_bound_wall']:
-                    reject_wall = True
+        z_position_of_moving_atom_all = position_of_moving_atom[:,2]
+        z_position_in_box = sum((z_position_of_moving_atom_all < upper_bound_z) & (z_position_of_moving_atom_all > lower_bound_z))
+        if z_position_in_box % len(z_position_of_moving_atom_all) != 0:
+            reject_wall = True
+        elif z_position_in_box == 0 and ns_args['exclude_z'] == 'exterior':
+            reject_wall = True
+        elif z_position_in_box == len(z_position_of_moving_atom_all) and ns_args['exclude_z'] == 'interior':
+            reject_wall = True
     #BRIGHT END
 
     #DOC \item if reject
@@ -3324,7 +3328,8 @@ def main():
         global E_dump_io
         global print_prefix
         global Z_list
-
+        global upper_bound_z, lower_bound_z
+        
         import sys
         
         sys.excepthook = excepthook_mpi_abort
@@ -3489,8 +3494,15 @@ def main():
         
         #BRIGHT ASE Z wall parameters
         ns_args['MD_wall_Z'] = str_to_logical(args.pop('MD_wall_Z', 'F'))
-        ns_args['upper_bound_wall'] = float(args.pop('upper_bound_wall',np.inf))
-        ns_args['lower_bound_wall'] = float(args.pop('lower_bound_wall',0))
+        ns_args['exclude_z'] = str(args.pop('exclude_z', 'exterior'))
+        ns_args['boundary_z1'] = float(args.pop('boundary_z1',np.inf))
+        ns_args['boundary_z2'] = float(args.pop('boundary_z2',0))
+        if ns_args['boundary_z1'] >= ns_args['boundary_z2']:
+            upper_bound_z = ns_args['boundary_z1']
+            lower_bound_z = ns_args['boundary_z2']
+        else:
+            upper_bound_z = ns_args['boundary_z2']
+            lower_bound_z = ns_args['boundary_z1']
         #BRIGHT END
 
         # surely there's a cleaner way of doing this?
