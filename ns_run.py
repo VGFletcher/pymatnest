@@ -1200,10 +1200,6 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
                 reject_wall = False
             if ns_args['exclude_z'] == 'interior':
                 reject_wall = not reject_wall
-            #if z_position_in_box == 0 and ns_args['exclude_z'] == 'exterior':
-            #    reject_wall = True
-            #elif z_position_in_box == len(z_position_of_moving_atom_all) and ns_args['exclude_z'] == 'interior':
-            #    reject_wall = True
     #BRIGHT END
 
     #DOC \item if reject
@@ -3504,12 +3500,11 @@ def main():
         ns_args['exclude_z'] = str(args.pop('exclude_z', 'exterior'))
         ns_args['boundary_z1'] = float(args.pop('boundary_z1',np.inf))
         ns_args['boundary_z2'] = float(args.pop('boundary_z2',0))
-        if ns_args['boundary_z1'] >= ns_args['boundary_z2']:
+        upper_bound_z = ns_args['boundary_z2']
+        lower_bound_z = ns_args['boundary_z1']
+        if ns_args['boundary_z1'] > ns_args['boundary_z2']:
             upper_bound_z = ns_args['boundary_z1']
             lower_bound_z = ns_args['boundary_z2']
-        else:
-            upper_bound_z = ns_args['boundary_z2']
-            lower_bound_z = ns_args['boundary_z1']
         #BRIGHT END
 
         # surely there's a cleaner way of doing this?
@@ -4267,9 +4262,8 @@ def main():
                     at.info['volume'] = at.get_volume()
 
             if movement_args['do_velocities']:
-                if movement_args['do_velocities']:
                 #BRIGHT Assign KEmax if starting the simulation from restart file (i.e. iter=-1)
-                    KEmax = 1.5*len(walkers[0])*ns_args['kB']*ns_args['KEmax_max_T']
+                KEmax = 1.5*len(walkers[0])*ns_args['kB']*ns_args['KEmax_max_T']
                 #BRIGHT END
             else:
                 KEmax = -1.0
