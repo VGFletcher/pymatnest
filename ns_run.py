@@ -519,6 +519,22 @@ def usage():
      ``committee_std_frac=float``
      | The fraction of walkers that must have a committee STD per atom greater than the committee_std_barrier to stop the nested sampling run.
      | default: 1.0
+
+     ``MD_wall_Z=[ T | F ]``
+     | Rejection of configurations in which a moving atom(s) is outside/inside the defined region.
+     | default: False
+
+     ``boundary_z1=float``
+     | First z boundary
+     | default: np.inf
+
+     ``boundary_z2=float``
+     | Second z boundary
+     | default: 0
+
+     ``exclude_z=[ exterior | interior ]``
+     | Rejection of configurations in which a moving atom(s) is outside (exterior) or inside (interior) the defined boundaries.
+     | default: exterior
     """
     sys.stderr.write("Usage: %s [ -no_mpi ] < input\n" % sys.argv[0])
     sys.stderr.write("input:\n")
@@ -1165,9 +1181,30 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
             reject_uq = False
     else:
         reject_uq = False
-        
+
+    #BRIGHT reject if outside the defined area
+    reject_wall = False
+    if ns_args['MD_wall_Z']:
+        if movement_args['keep_atoms_fixed'] > 0:
+            moving_atoms = at[movement_args['keep_atoms_fixed']:]
+        else:
+            moving_atoms = at
+        position_of_moving_atom = moving_atoms.get_positions(wrap=True)
+        z_position_of_moving_atom_all = position_of_moving_atom[:,2]
+        z_position_in_box = sum((z_position_of_moving_atom_all < upper_bound_z) & (z_position_of_moving_atom_all > lower_bound_z))
+        if z_position_in_box % len(z_position_of_moving_atom_all) != 0:
+            reject_wall = True
+        else:
+            if z_position_in_box == 0:
+                reject_wall = True
+            else:
+                reject_wall = False
+            if ns_args['exclude_z'] == 'interior':
+                reject_wall = not reject_wall
+    #BRIGHT END
+
     #DOC \item if reject
-    if reject_fuzz or reject_Emax or reject_KEmax or reject_len or reject_uq:  # reject
+    if reject_fuzz or reject_Emax or reject_KEmax or reject_len or reject_uq or reject_wall:  # reject
         #DOC \item set positions, velocities, energy back to value before perturbation (maybe should be after?)
         # print(print_prefix, ": WARNING: reject MD traj Emax ", Emax, " initial E ", orig_E, " velo perturbed E ", pre_MD_E, " final E ",final_E, " KEmax ", KEmax, " KE ", final_KE)
 
@@ -3295,6 +3332,7 @@ def main():
         global E_dump_io
         global print_prefix
         global Z_list
+        global upper_bound_z, lower_bound_z
 
         import sys
         
@@ -3457,6 +3495,18 @@ def main():
         if (ns_args['committee_std_barrier'] == np.inf) or (ns_args['min_std'] < ns_args['committee_std_barrier']):
             ns_args['committee_std_stopping_criteria'] = False
         #End VGF parameters
+        
+        #BRIGHT ASE Z wall parameters
+        ns_args['MD_wall_Z'] = str_to_logical(args.pop('MD_wall_Z', 'F'))
+        ns_args['exclude_z'] = str(args.pop('exclude_z', 'exterior'))
+        ns_args['boundary_z1'] = float(args.pop('boundary_z1',np.inf))
+        ns_args['boundary_z2'] = float(args.pop('boundary_z2',0))
+        upper_bound_z = ns_args['boundary_z1']
+        lower_bound_z = ns_args['boundary_z2']
+        if ns_args['boundary_z2'] > ns_args['boundary_z1']:
+            upper_bound_z = ns_args['boundary_z2']
+            lower_bound_z = ns_args['boundary_z1']
+        #BRIGHT END
 
         # surely there's a cleaner way of doing this?
         try:
@@ -4213,7 +4263,9 @@ def main():
                     at.info['volume'] = at.get_volume()
 
             if movement_args['do_velocities']:
-                KEmax = walkers[0].info['KEmax']
+                #BRIGHT Assign KEmax if starting the simulation from restart file (i.e. iter=-1)
+                KEmax = 1.5*len(walkers[0])*ns_args['kB']*ns_args['KEmax_max_T']
+                #BRIGHT END
             else:
                 KEmax = -1.0
 
