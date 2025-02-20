@@ -3501,11 +3501,11 @@ def main():
         ns_args['exclude_z'] = str(args.pop('exclude_z', 'exterior'))
         ns_args['boundary_z1'] = float(args.pop('boundary_z1',np.inf))
         ns_args['boundary_z2'] = float(args.pop('boundary_z2',0))
-        upper_bound_z = ns_args['boundary_z2']
-        lower_bound_z = ns_args['boundary_z1']
-        if ns_args['boundary_z1'] > ns_args['boundary_z2']:
-            upper_bound_z = ns_args['boundary_z1']
-            lower_bound_z = ns_args['boundary_z2']
+        upper_bound_z = ns_args['boundary_z1']
+        lower_bound_z = ns_args['boundary_z2']
+        if ns_args['boundary_z2'] > ns_args['boundary_z1']:
+            upper_bound_z = ns_args['boundary_z2']
+            lower_bound_z = ns_args['boundary_z1']
         #BRIGHT END
 
         # surely there's a cleaner way of doing this?
