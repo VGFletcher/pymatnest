@@ -3149,7 +3149,8 @@ def main():
         global movement_args
         global ns_args, start_first_iter
         global max_n_cull_per_task
-        global size, rank, comm, rng, np, sys, ns_analyzers
+        global size, rank, comm
+        global rng, np, sys, ns_analyzers
         global n_cull, n_walkers, n_walkers_per_task
         global n_extra_walk_per_task
         global do_calc_ASE, do_calc_lammps, do_calc_internal, do_calc_fortran
@@ -3411,7 +3412,8 @@ def main():
             seed = np.array([0] * l_seed, dtype=np.int32)
             for i in range(l_seed):
                 # maybe we need a better way of getting max possible int
-                seed[i] = rng.int_uniform(1, sys.maxsize)
+                # seed[i] = rng.int_uniform(1, sys.maxsize)
+                seed[i] = rng.int_uniform(1, np.iinfo(np.int32).max)
             f_MC_MD.set_seed(seed)
 
         ns_args['reproducible'] = str_to_logical(args.pop('reproducible', "F"))
