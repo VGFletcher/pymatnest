@@ -1837,7 +1837,7 @@ def walk_single_walker(at, movement_args, Emax, KEmax):
     return out
 
 
-def max_energy(walkers, n, kinetic_only=False):
+def max_energy(walkers, n, comm=None, kinetic_only=False):
     """Collect the current energies of the walkers from all the processes and
     chooses the right number of highest energies to be culled"""
     # do local max
@@ -2270,7 +2270,7 @@ def accumulate_stats(d_cumul, d):
 
 
 # figure out n_steps to walk on each iteration to get correct expected number
-def set_n_from_expected(prop):
+def set_n_from_expected(prop, rank, size):
     if movement_args[prop+'_expected'] > 0:
         if movement_args[prop] > 0:
             exit_error("Got both "+prop+" and "+prop+"_expected, conflict\n", 5)
@@ -2345,7 +2345,7 @@ def additive_init_config(at, Emax):
     at.set_positions(pos)
     return energy
 
-def save_snapshot(snapshot_id):
+def save_snapshot(snapshot_id, rank, size, comm=None):
     """
     Save the current walker configurations' as a snapshot in the file ``out_file_prefix.iter.rank.config_file_format``
     """
@@ -2390,7 +2390,7 @@ def save_snapshot(snapshot_id):
     if ns_args['snapshot_per_parallel_task'] or rank == 0:
         snapshot_io.close()
 
-def clean_prev_snapshot(iter):
+def clean_prev_snapshot(iter, rank):
     if iter is not None and ns_args['snapshot_clean']:
         snapshot_file=ns_args['out_file_prefix']+'snapshot.%d.%d.%s' % (iter, rank, ns_args['config_file_format'])
         try:
@@ -2399,7 +2399,7 @@ def clean_prev_snapshot(iter):
             print( print_prefix, ": WARNING: Failed to delete '%s'" % snapshot_file)
 
 
-def do_ns_loop():
+def do_ns_loop(rank, size, comm):
     """
     This is the main nested sampling loop, doing the iterations.
     """
@@ -2517,7 +2517,7 @@ def do_ns_loop():
             print(print_prefix, "%30s" % ": LOOP_X START 02 ", i_ns_step, ["%.10f" % at.positions[0, 0] for at in walkers])
 
         # get list of highest energy configs
-        (Emax, Vmax, cull_rank, cull_ind) = max_energy(walkers, n_cull)
+        (Emax, Vmax, cull_rank, cull_ind) = max_energy(walkers, n_cull, comm=comm)
         Emax_next = Emax[-1]
         if rank == 0 and Emax_of_step is not None and Emax[0] > Emax_of_step:
             print(print_prefix, ": WARNING: energy above Emax ", Emax_of_step, " bad energies: ", Emax[np.where(Emax > Emax_of_step)], cull_rank[np.where(Emax > Emax_of_step)], cull_ind[np.where(Emax > Emax_of_step)])
@@ -3103,9 +3103,9 @@ def do_ns_loop():
         if comm is not None:
             do_snapshot = comm.bcast(do_snapshot, root=0)
         if do_snapshot:
-            save_snapshot(i_ns_step)
+            save_snapshot(i_ns_step, rank, size, comm)
             last_snapshot_time = time.time()
-            clean_prev_snapshot(pprev_snapshot_iter)
+            clean_prev_snapshot(pprev_snapshot_iter, rank)
             pprev_snapshot_iter = prev_snapshot_iter
             prev_snapshot_iter = i_ns_step
 
@@ -3149,7 +3149,7 @@ def main():
         global movement_args
         global ns_args, start_first_iter
         global max_n_cull_per_task
-        global size, rank, comm
+        # global size, rank, comm
         global rng, np, sys, ns_analyzers
         global n_cull, n_walkers, n_walkers_per_task
         global n_extra_walk_per_task
@@ -3692,7 +3692,7 @@ def main():
         internal_cutoff = 3.0
         Eshift = internal_cutoff**-12 - internal_cutoff**-6
 
-        set_n_from_expected('n_model_calls')
+        set_n_from_expected('n_model_calls', rank, size)
         if rank == 0:
             print("Using n_model_calls = ", movement_args['n_model_calls'])
 
@@ -4114,7 +4114,10 @@ def main():
                             ns_analyzer.analyze(walkers, -1, "initial_walk %d" % i_initial_walk)
 
                 if ns_args['snapshot_interval'] > 0 and (i_initial_walk+1) % ns_args['snapshot_interval'] == 0:
-                    save_snapshot(i_initial_walk-ns_args['initial_walk_N_walks'])
+                    save_snapshot(
+                        i_initial_walk-ns_args['initial_walk_N_walks'],
+                        rank, size, comm
+                    )
 
             # restore walk lengths for rest of NS run
             movement_args['n_model_calls'] = save_n_model_calls
@@ -4230,14 +4233,14 @@ def main():
             print("if")
             import cProfile
             pr = cProfile.Profile()
-            final_iter = pr.runcall(do_ns_loop)
+            final_iter = pr.runcall(do_ns_loop, rank, size, comm)
             pr.dump_stats(ns_args['out_file_prefix']+'profile.stats')
         else:
             print("else")
-            final_iter = do_ns_loop()
+            final_iter = do_ns_loop(rank, size, comm)
 
         # cleanup post loop
-        save_snapshot(final_iter)  # this is the final configuration
+        save_snapshot(final_iter, rank, size, comm)  # this is the final configuration
 
         for at in walkers:
             print(rank, ": final energy ", at.info['ns_energy'])
