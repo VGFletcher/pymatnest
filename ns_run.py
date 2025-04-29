@@ -1,3 +1,4 @@
+from ast import Not
 import re, math, time, os
 import pprint
 import numpy as np, ase, ase.io
@@ -3226,6 +3227,7 @@ def main():
         else:
             args = None
         if comm is not None:
+            # TODO: to be implemented by NU
             args = comm.bcast(args, root=0)  # send args to other processes
 
 #DOC ``main``: parse arguments
@@ -3394,15 +3396,18 @@ def main():
         ns_args['ns_run_analyzers'] = args.pop('ns_run_analyzers', '')
 
         if ns_args['rng'] == 'numpy':
+            # TODO: to be implemented by NU
             rng = ns_rng.NsRngNumpy(ns_args['delta_random_seed'], comm)
         # elif ns_args['rng'] == 'julia':
         #    import julia
         #    j = julia.Julia()
         #    rng = ns_rng.NsRngJulia(j)
         elif ns_args['rng'] == 'rngstream':
+            raise NotImplementedError("NU")
             import rngstream
             rng = ns_rng.NsRngStream(ns_args['delta_random_seed'], comm)
         elif ns_args['rng'] == 'internal':
+            raise NotImplementedError("NU")
             rng = ns_rng.NsRngInternal(ns_args['delta_random_seed'], comm)
         else:
             exit_error("rng=%s unknown\n" % ns_args['rng'], 3)
@@ -3610,6 +3615,7 @@ def main():
 
         # initialize in-situ analyzers
         try:
+            raise NotImplementedError("NU")
             ns_analyzers=[]
             for analyzer_str in ns_args['ns_run_analyzers'].split(";"):
                 try:
@@ -3712,6 +3718,7 @@ def main():
                     else:
                         species_list.append("%d %d" % (Z, n_of_Z))
             if comm is not None:
+                # TODO: to be implemented by NU
                 species_list = comm.bcast(species_list, root=0)
 
 
@@ -3770,6 +3777,7 @@ def main():
                     ns_args['restart_file'] = ''
 
             if comm is not None:
+                # TODO: to be implemented by NU
                 ns_args['restart_file'] = comm.bcast(ns_args['restart_file'], root=0)
         sys.stdout.flush()
 
@@ -3814,6 +3822,7 @@ def main():
 
             # bcast atoms created on rank == 0
             if comm is not None:
+                # TODO: to be implemented by NU
                 init_atoms = comm.bcast(init_atoms, root=0)
 
             # create extra data arrays if needed
@@ -3826,6 +3835,7 @@ def main():
 
             # set up data structures to track configs as they are cloned and evolve
             if ns_args['track_configs']:
+                raise NotImplementedError("Set track_configs=False for now")
                 if comm is None:
                     config_ind = 0
                 else:
@@ -3974,10 +3984,12 @@ def main():
             # broadcast swap_atomic_numbers in case it was overridden to True
             # by presence of configurations with different atomic number lists
             if comm is not None:
+                # TODO: to be implemented by NU
                 ns_args['swap_atomic_numbers'] = comm.bcast(
                     ns_args['swap_atomic_numbers'], root=0)
 
             if ns_args['track_configs']:
+                raise NotImplementedError
                 if comm is not None:
                     cur_config_ind = comm.size*n_walkers
                 else:
@@ -3991,6 +4003,7 @@ def main():
 
             # Calculate ns_energy for manual surface configurations from restart
             if movement_args['keep_atoms_fixed'] > 0:
+                # raise NotImplementedError("Set keep_atoms_fixed=0 for now")
                 # print("RBW: calc ns_energy for man surf configs from restart") # debug
                 for (i_at, at) in enumerate(walkers):
                     if do_calc_ASE or do_calc_lammps:
@@ -4072,7 +4085,7 @@ def main():
             if rank == 0:
                 print("doing initial_walks", ns_args['initial_walk_N_walks'])
                 t0 = time.time()
-            (Emax, Vmax, cull_rank, cull_ind) = max_energy(walkers, 1)
+            (Emax, Vmax, cull_rank, cull_ind) = max_energy(walkers, 1, comm=comm)
             # WARNING: this assumes that all walkers have same numbers of atoms
             Emax = Emax[0] + ns_args['initial_walk_Emax_offset_per_atom']*len(walkers[0])
 
@@ -4092,6 +4105,8 @@ def main():
                 if i_initial_walk > 0 and (i_initial_walk-1) % ns_args['initial_walk_adjust_interval'] == 0:  # first adjust is after first walk
                     # could be done before first walk if full_auto_set_stepsize
                     # didn't need walk_stats
+
+                    # TODO: to be implemented by NU
                     full_auto_set_stepsizes(walkers, walk_stats_adjust,
                                             movement_args, comm, Emax, -1, size)
                     walk_stats_adjust = {}
@@ -4114,6 +4129,7 @@ def main():
                             ns_analyzer.analyze(walkers, -1, "initial_walk %d" % i_initial_walk)
 
                 if ns_args['snapshot_interval'] > 0 and (i_initial_walk+1) % ns_args['snapshot_interval'] == 0:
+                    # TODO: to be implemented by NU
                     save_snapshot(
                         i_initial_walk-ns_args['initial_walk_N_walks'],
                         rank, size, comm
@@ -4122,9 +4138,10 @@ def main():
             # restore walk lengths for rest of NS run
             movement_args['n_model_calls'] = save_n_model_calls
 
-            (KEmax, _, _, _) = max_energy(walkers, 1, kinetic_only=True)
+            (KEmax, _, _, _) = max_energy(walkers, 1, kinetic_only=True, comm=comm)
 
             if ns_args['initial_walk_only']:
+                # TODO: to be implemented by NU
                 if comm is not None:
                     MPI.Finalize()
                 sys.exit(0)
@@ -4240,6 +4257,7 @@ def main():
             final_iter = do_ns_loop(rank, size, comm)
 
         # cleanup post loop
+        # TODO: to be implemented by NU
         save_snapshot(final_iter, rank, size, comm)  # this is the final configuration
 
         for at in walkers:
