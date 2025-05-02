@@ -1530,13 +1530,6 @@ def do_cell_step(at, Emax, p_accept, transform):
     new_cell = np.dot(orig_cell,transform)
     new_vol = abs(np.dot(new_cell[0,:],np.cross(new_cell[1,:],new_cell[2,:])))
 
-    #VGF If ACE_committee is present and enabled, calculate the energy std value before walking
-    if ns_args['ACE_committee']:
-        try:
-            pre_uq_val = at.info['committee_std']
-        except:
-            pre_uq_val = at.calc.get_property('co_ene_std', at)/len(at)
-
     # check size and shape constraints
     if new_vol > ns_args['max_volume_per_atom']*len(at) or new_vol < ns_args['min_volume_per_atom']*len(at):
         return False
@@ -1547,6 +1540,13 @@ def do_cell_step(at, Emax, p_accept, transform):
     orig_pos = at.get_positions()
     if ns_args['n_extra_data'] > 0:
         extra_data = at.arrays['ns_extra_data'].copy()
+        
+    #VGF If ACE_committee is present and enabled, calculate the energy std value before walking
+    if ns_args['ACE_committee']:
+        try:
+            pre_uq_val = at.info['committee_std']
+        except:
+            pre_uq_val = at.calc.get_property('co_ene_std', at)/len(at)
 
     # set new positions and velocities
     at.set_cell(new_cell, scale_atoms=True)
