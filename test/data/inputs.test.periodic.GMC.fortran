@@ -11,6 +11,8 @@ converge_down_to_T=5000
 
 monitor_step_interval=5
 out_file_prefix=lj
+make_output_dir=T
+RE_pressures=0 0.1
 
 ################################################################################
 
