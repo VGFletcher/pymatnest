@@ -1,7 +1,7 @@
 from mpi4py import MPI
 import numpy as np
 from ase import Atoms
-from replica_exchange_utils import *
+import replica_exchange_utils as re_utils
 
 num_replicas = 4
 n_walkers = 12
@@ -61,7 +61,7 @@ status = MPI.Status()
 # swap_idx = np.random.randint(0, walkers_per_task)
 swap_idx_phase1 = 0
 
-n_send = get_buffer_size(
+n_send = re_utils.get_buffer_size(
     n_atoms,
     do_velocities,
     do_GMC,
@@ -71,7 +71,7 @@ n_send = get_buffer_size(
 )
 rcv_buf = np.zeros(n_send)
 walker_snd = walkers[swap_idx_phase1]
-snd_buf = construct_snd_buf(
+snd_buf = re_utils.construct_snd_buf(
     walker_snd,
     n_send,
     n_atoms, 
@@ -90,7 +90,7 @@ if replica_idx % 2 == 0:
         tried = 1 
         comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank + size_replica)
         comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank + size_replica, status=status)
-        walker_rcv = read_rcv_buf(
+        walker_rcv = re_utils.read_rcv_buf(
             walker_snd.copy(), # not sure whether swap will be accepted -> copy
             rcv_buf,
             n_atoms, 
@@ -100,7 +100,7 @@ if replica_idx % 2 == 0:
             swap_atomic_numbers,
             track_configs
         )
-        acc = swap_acceptance(
+        acc, h0, h1 = re_utils.swap_acceptance(
             walker_snd, 
             walker_rcv, 
             RE_pressures[replica_idx], 
@@ -109,12 +109,13 @@ if replica_idx % 2 == 0:
             elims[replica_idx + 1],
         ) 
         if acc:
+            walker_rcv.info["ns_energy"] = h0
             walkers[swap_idx_phase1] = walker_rcv
 
 if replica_idx % 2 != 0:
     comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank - size_replica, status=status)
     comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank - size_replica)
-    walker_rcv = read_rcv_buf(
+    walker_rcv = re_utils.read_rcv_buf(
         walker_snd.copy(), 
         rcv_buf,
         n_atoms, 
@@ -124,7 +125,7 @@ if replica_idx % 2 != 0:
         swap_atomic_numbers,
         track_configs
     )
-    acc = swap_acceptance(
+    acc, h0, h1 = re_utils.swap_acceptance(
         walker_snd, 
         walker_rcv, 
         RE_pressures[replica_idx - 1], 
@@ -133,6 +134,7 @@ if replica_idx % 2 != 0:
         elims[replica_idx],
     ) 
     if acc:
+        walker_rcv.info["ns_energy"] = h1
         walkers[swap_idx_phase1] = walker_rcv
 
 
@@ -156,7 +158,7 @@ if num_replicas > 2:
     rcv_buf = np.zeros(n_send)
     # swap_idx = np.random.randint(0, walkers_per_task)
     swap_idx_phase2 = 0
-    snd_buf = construct_snd_buf(
+    snd_buf = re_utils.construct_snd_buf(
         walkers[swap_idx_phase2],
         n_send,
         n_atoms, 
@@ -173,7 +175,7 @@ if num_replicas > 2:
             tried = 1
             comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank + size_replica)
             comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank + size_replica, status=status)
-            walker_rcv = read_rcv_buf(
+            walker_rcv = re_utils.read_rcv_buf(
                 walker_snd.copy(),
                 rcv_buf,
                 n_atoms, 
@@ -183,7 +185,7 @@ if num_replicas > 2:
                 swap_atomic_numbers,
                 track_configs
             )
-            acc = swap_acceptance(
+            acc, h0, h1 = re_utils.swap_acceptance(
                 walker_snd, 
                 walker_rcv, 
                 RE_pressures[replica_idx], 
@@ -192,13 +194,14 @@ if num_replicas > 2:
                 elims[replica_idx + 1],
             ) 
             if acc:
+                walker_rcv.info["ns_energy"] = h0
                 walkers[swap_idx_phase2] = walker_rcv
 
     if replica_idx % 2 == 0:
         if not replica_idx == 0:
             comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank - size_replica, status=status)
             comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank - size_replica)
-            walker_rcv = read_rcv_buf(
+            walker_rcv = re_utils.read_rcv_buf(
                 walker_snd.copy(), 
                 rcv_buf,
                 n_atoms, 
@@ -208,7 +211,7 @@ if num_replicas > 2:
                 swap_atomic_numbers,
                 track_configs
             )
-            acc = swap_acceptance(
+            acc, h0, h1 = re_utils.swap_acceptance(
                 walker_snd, 
                 walker_rcv, 
                 RE_pressures[replica_idx - 1], 
@@ -217,6 +220,7 @@ if num_replicas > 2:
                 elims[replica_idx],
             ) 
             if acc:
+                walker_rcv.info["ns_energy"] = h1
                 walkers[swap_idx_phase2] = walker_rcv
 
 

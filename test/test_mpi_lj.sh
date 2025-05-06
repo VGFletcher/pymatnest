@@ -9,5 +9,5 @@ cd ${foldername}
 
 
 echo ${test_path}
-mpirun -np 6 python ${test_path}/../ns_run < ${test_path}/data/inputs.test.periodic.GMC.fortran
+mpirun -np 12 python ${test_path}/../ns_run < ${test_path}/data/inputs.test.periodic.GMC.fortran
 # /home/nico.unglert/code/pymatnest/ns_run < data/inputs.test.periodic.GMC.fortran > profile.out

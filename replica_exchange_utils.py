@@ -2,22 +2,46 @@ import numpy as np
 from ase import Atoms
 
 def swap_acceptance(
-    at0: Atoms, at1: Atoms, p0: float, p1: float, elim0: float, elim1: float
+    at_l: Atoms, at_r: Atoms, p_l: float, p_r: float, elim_l: float, elim_r: float
 ) -> bool:
-    """Computes the swap move acceptance criterion
+    """Computes the swap move acceptance criterion for configurations from 
+    two replicas. We use a notation of left and right, referring to the 
+    position of the replica_idx. E.g. for the swap (1 <-> 2), 1 is left, and 
+    2 is right.
+    
+    Hence:
+
+        Left:       Right:
+        at_l         at_r
+        p_l          p_r
+        elim_l       elim_r
+    
+    We will invoke this acceptance criterion on ranks which contribute either 
+    the left or the right swap partner. Thus, care needs to be taken what the
+    proper inputs are for swap_acceptance.
+
+    Consider the swap (1 <-> 2). The left partner 1 will contribute a 
+    walker_snd from its pool and receive a walker_rcv from the right partner.
+    Hence on the left side we need to evaluate
+        
+        swap_acceptance(walker_snd, walker_rcv, p1, p2, elim1, elim2)
+
+    On the other hand, for partner 2 we have to call
+    
+        swap_acceptance(walker_rcv, walker_snd, p1, p2, elim1, elim2)
     """
     # Example:
-    v0 = at0.get_volume()
-    v1 = at1.get_volume()
-    h0 = at0.info["ns_energy"]
-    h1 = at1.info["ns_energy"]
-    u0 = h0 - p0 * v0
-    u1 = h1 - p1 * v1
+    v_l = at_l.get_volume()
+    v_r = at_r.get_volume()
+    h_l = at_l.info["ns_energy"]
+    h_r = at_r.info["ns_energy"]
+    u_l = h_l - p_l * v_l
+    u_r = h_r - p_r * v_r
 
-    h0_new = u1 + p0 * v1
-    h1_new = u0 + p1 * v0
+    h_l_new = u_r + p_l * v_r
+    h_r_new = u_l + p_r * v_l
 
-    return (h0_new < elim0) & (h1_new < elim1)
+    return (h_l_new < elim_l) & (h_r_new < elim_r), h_l_new, h_r_new
 
 
 def get_buffer_size(

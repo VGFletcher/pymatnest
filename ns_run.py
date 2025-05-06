@@ -2403,7 +2403,7 @@ def save_snapshot(snapshot_id, rank, size, outfile, comm=None):
             at.info['volume'] = at.get_volume()
             at.info['iter']=snapshot_id
             ase.io.write(snapshot_io, at, parallel=False, format=ns_args['config_file_format'])
-        print( "root walkers write time ", time.time() - root_walkers_write_t0)
+        outfile.print( "root walkers write time ", time.time() - root_walkers_write_t0)
 
     if not ns_args['snapshot_per_parallel_task']:
         if comm is not None: # gather other walkers to do I/O on master task
@@ -2432,6 +2432,18 @@ def clean_prev_snapshot(iter, rank):
         except:
             print( print_prefix, ": WARNING: Failed to delete '%s'" % snapshot_file)
 
+def create_symmetry_checker(size_replica):
+    
+    def check_block_symmetry(arr):
+        
+        reshaped = arr.reshape(-1, 2 * size_replica)
+        for i, block in enumerate(reshaped):
+            if not np.array_equal(block[:size_replica], block[size_replica:]):
+                print(f"Block {i} is not symmetric: {block}")
+                return False
+        return True
+    
+    return check_block_symmetry
 
 def do_ns_loop(
     rank: int, 
@@ -2451,11 +2463,15 @@ def do_ns_loop(
     global print_prefix
     global cur_config_ind
 
+
     size_global = comm_global.Get_size()
     rank_global = comm_global.Get_rank()
+    size_replica = comm.Get_size()
+    rank_replica = comm.Get_rank()
     num_replicas = size_global // size
-    size_replica = size_global // num_replicas
     replica_idx = rank_global // size_replica
+
+    sym_checker = create_symmetry_checker(size_replica)
 
     # cant keep atoms fixed and change the simulation cell at the moment
     if (movement_args['keep_atoms_fixed'] > 0
@@ -3235,8 +3251,16 @@ def do_ns_loop(
         #        X      X      X      X
         # |  { {r10}, {r11}, {r12}, {r13} }  |
         #
-        if len(ns_args["RE_pressures"]) > 1:
-            if i_ns_step % ns_args["RE_swap_interval"] == 0:
+        # comm_global.barrier() #BARRIER
+        if (
+            i_ns_step % ns_args["RE_swap_interval"] == 0
+            and ns_args["RE_swap_interval"] > 0
+            and len(ns_args["RE_pressures"]) > 1
+        ):
+            total_accs = np.zeros(size_global)
+            total_tries = np.zeros(size_global)
+
+            for cycle in range(ns_args["RE_n_swap_cycles"]):
 
                 do_velocities = movement_args["do_velocities"]
                 do_GMC = movement_args["do_GMC"]
@@ -3249,7 +3273,6 @@ def do_ns_loop(
                 all_elims = np.zeros(size_global)
                 comm_global.Allgather(np.array(Emax_of_step), all_elims)
                 elims = all_elims[::size_replica]
-                print(elims)
 
                 # ------------------------------------------------------------
                 # phase 1
@@ -3286,8 +3309,13 @@ def do_ns_loop(
                 if replica_idx % 2 == 0:
                     if (replica_idx + 1) < num_replicas:
                         tried = 1 
-                        comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank + size_replica)
+                        request = comm_global.Isend((snd_buf, MPI.DOUBLE), dest=src_rank + size_replica)
                         comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank + size_replica, status=status)
+                        request.Wait()
+
+                        if ns_args["debug"] >= 20:
+                            print(f"RENS: phase 1 left finished on {rank=}")
+
                         walker_rcv = re_utils.read_rcv_buf(
                             walker_snd.copy(), # not sure whether swap will be accepted -> copy
                             rcv_buf,
@@ -3298,7 +3326,7 @@ def do_ns_loop(
                             swap_atomic_numbers,
                             track_configs
                         )
-                        acc = re_utils.swap_acceptance(
+                        acc, h0, h1 = re_utils.swap_acceptance(
                             walker_snd, 
                             walker_rcv, 
                             RE_pressures[replica_idx], 
@@ -3307,11 +3335,17 @@ def do_ns_loop(
                             elims[replica_idx + 1],
                         ) 
                         if acc:
+                            walker_rcv.info["ns_energy"] = h0
                             walkers[swap_idx_phase1] = walker_rcv
 
                 if replica_idx % 2 != 0:
-                    comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank - size_replica, status=status)
+                    request = comm_global.Irecv((rcv_buf, MPI.DOUBLE), source=src_rank - size_replica)
                     comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank - size_replica)
+                    request.Wait()
+
+                    if ns_args["debug"] >= 20:
+                        print(f"RENS: phase 1 right finished on {rank=}")
+
                     walker_rcv = re_utils.read_rcv_buf(
                         walker_snd.copy(), 
                         rcv_buf,
@@ -3322,18 +3356,25 @@ def do_ns_loop(
                         swap_atomic_numbers,
                         track_configs
                     )
-                    acc = re_utils.swap_acceptance(
-                        walker_snd, 
+                    # This is the right 
+                    acc, h0, h1 = re_utils.swap_acceptance(
                         walker_rcv, 
+                        walker_snd, 
                         RE_pressures[replica_idx - 1], 
                         RE_pressures[replica_idx],
                         elims[replica_idx - 1], 
                         elims[replica_idx],
                     ) 
                     if acc:
+                        walker_rcv.info["ns_energy"] = h1
                         walkers[swap_idx_phase1] = walker_rcv
+                    
+                    # set acc to zero again, such that only the acc from the 
+                    # left swap partner counts for the swap. 
+                    acc = 0
 
 
+                comm_global.barrier() #BARRIER
                 phase1_tries = np.zeros(size_global, dtype=int)
                 phase1_accs = np.zeros(size_global, dtype=int)
                 comm_global.Gather(
@@ -3342,9 +3383,17 @@ def do_ns_loop(
                 comm_global.Gather(
                     np.array(acc, dtype=int), phase1_accs, root=0
                 )
-                if rank_global == 0:
-                    print(phase1_tries)
-                    print(phase1_accs)
+                total_tries += phase1_tries
+                total_accs += phase1_accs
+                if ns_args["debug"] >= 20:
+                    if rank_global == 0:
+                        print("RENS phase1 statistics:")
+                        print(phase1_tries)
+                        print(phase1_accs)
+                        # assert sym_checker(phase1_accs)
+
+                # TODO: check for symmetry in acc array. If the left part 
+                # accepts the swap, then the right part also has to accept!
 
                 # ------------------------------------------------------------
                 # phase 2
@@ -3357,8 +3406,9 @@ def do_ns_loop(
                     # swap_idx = np.random.randint(0, walkers_per_task)
                     # swap_idx_phase2 = 0
                     swap_idx_phase2 = rng.int_uniform(0, size_replica)
+                    walker_snd = walkers[swap_idx_phase2]
                     snd_buf = re_utils.construct_snd_buf(
-                        walkers[swap_idx_phase2],
+                        walker_snd,
                         n_send,
                         n_atoms, 
                         do_velocities,
@@ -3372,8 +3422,13 @@ def do_ns_loop(
                     if replica_idx % 2 != 0:
                         if (replica_idx + 1) < num_replicas:
                             tried = 1
-                            comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank + size_replica)
+                            request = comm_global.Isend((snd_buf, MPI.DOUBLE), dest=src_rank + size_replica)
                             comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank + size_replica, status=status)
+                            request.Wait()
+
+                            if ns_args["debug"] >= 20:
+                                print(f"RENS: phase 2 left finished on {rank=}")
+
                             walker_rcv = re_utils.read_rcv_buf(
                                 walker_snd.copy(),
                                 rcv_buf,
@@ -3384,7 +3439,7 @@ def do_ns_loop(
                                 swap_atomic_numbers,
                                 track_configs
                             )
-                            acc = re_utils.swap_acceptance(
+                            acc, h0, h1 = re_utils.swap_acceptance(
                                 walker_snd, 
                                 walker_rcv, 
                                 RE_pressures[replica_idx], 
@@ -3393,12 +3448,18 @@ def do_ns_loop(
                                 elims[replica_idx + 1],
                             ) 
                             if acc:
+                                walker_rcv.info["ns_energy"] = h0
                                 walkers[swap_idx_phase2] = walker_rcv
 
                     if replica_idx % 2 == 0:
                         if not replica_idx == 0:
-                            comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank - size_replica, status=status)
+                            request = comm_global.Irecv((rcv_buf, MPI.DOUBLE), source=src_rank - size_replica)
                             comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank - size_replica)
+                            request.Wait()
+
+                            if ns_args["debug"] >= 20:
+                                print(f"RENS: phase 2 right finished on {rank=}")
+
                             walker_rcv = re_utils.read_rcv_buf(
                                 walker_snd.copy(), 
                                 rcv_buf,
@@ -3409,27 +3470,57 @@ def do_ns_loop(
                                 swap_atomic_numbers,
                                 track_configs
                             )
-                            acc = re_utils.swap_acceptance(
-                                walker_snd, 
+                            acc, h0, h1 = re_utils.swap_acceptance(
                                 walker_rcv, 
+                                walker_snd, 
                                 RE_pressures[replica_idx - 1], 
                                 RE_pressures[replica_idx],
                                 elims[replica_idx - 1], 
                                 elims[replica_idx],
                             ) 
                             if acc:
+                                walker_rcv.info["ns_energy"] = h1
                                 walkers[swap_idx_phase2] = walker_rcv
 
+                            acc = 0
 
+                    # TODO: revisit barriers, they should not be necessary
+                    comm_global.barrier() 
+                    
                     phase2_tries = np.zeros(size_global, dtype=int)
                     phase2_accs = np.zeros(size_global, dtype=int)
                     comm_global.Gather(np.array(tried, dtype=int), phase2_tries, root=0)
                     comm_global.Gather(np.array(acc, dtype=int), phase2_accs, root=0)
 
-                    if rank_global == 0:
-                        print(phase2_tries)
-                        print(phase2_accs)
+                    total_tries += phase2_tries
+                    total_accs += phase2_accs
 
+                    if rank_global == 0:
+                        if ns_args["debug"] >= 20:
+                            print("RENS phase2 statistics:")
+                            print(phase2_tries)
+                            print(phase2_accs)
+                            # assert sym_checker(phase2_accs)
+            
+            if rank_global == 0:
+                # TODO: fix division by zero here
+                rates = (total_accs / total_tries).reshape(num_replicas, -1)
+                rates = rates[:-1].mean(axis=1)
+                header_str = f"{'swap':<8}"
+                rate_str = f"{'accrate':<8}"
+                for i in range(num_replicas - 1):
+                    swap_str = f"{i}<->{i+1}"
+                    header_str += f"{swap_str:<8}"
+                    rate_str += f"{rates[i]:<8.3f}"
+                print(header_str)
+                print(rate_str)
+
+                if ns_args["debug"] >= 10:
+                    print("RENS all cycles statistics:")
+                    print(total_tries)
+                    print(total_accs)
+
+        # comm_global.barrier() #BARRIER
         i_ns_step += 1
         ### END OF MAIN LOOP
 

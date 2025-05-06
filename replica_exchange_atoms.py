@@ -81,8 +81,9 @@ snd_buf = construct_snd_buf(
 src_rank = replica_idx * size_replica + rank
 if replica_idx % 2 == 0:
     if (replica_idx + 1) < num_replicas:
-        comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank + size_replica)
+        request = comm_global.Isend((snd_buf, MPI.DOUBLE), dest=src_rank + size_replica)
         comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank + size_replica, status=status)
+        request.Wait()
         walkers[swap_idx_phase1] = read_rcv_buf(
             walkers[swap_idx_phase1], 
             rcv_buf,
@@ -95,8 +96,9 @@ if replica_idx % 2 == 0:
         )
 
 if replica_idx % 2 != 0:
-    comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank - size_replica, status=status)
+    request = comm_global.Irecv((rcv_buf, MPI.DOUBLE), source=src_rank - size_replica)
     comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank - size_replica)
+    request.Wait()
     walkers[swap_idx_phase1] = read_rcv_buf(
         walkers[swap_idx_phase1], 
         rcv_buf,

@@ -10,6 +10,8 @@ calculator_comm = MPI.COMM_SELF
 rank_global = comm_global.Get_rank()  # id of process
 size_global = comm_global.Get_size() 
 
+assert size_global % num_replicas == 0
+
 size_replica = size_global // num_replicas
 assert n_walkers % size_replica == 0
 walkers_per_task = n_walkers // size_replica
@@ -31,6 +33,7 @@ comm = comm_replica
 all_walkers = np.arange(num_replicas * n_walkers).reshape(
     num_replicas, size_replica, walkers_per_task
 )
+
 walkers = all_walkers[replica_idx, rank]
 
 # print(f"{(replica_idx, rank)=}", walkers)
@@ -49,15 +52,17 @@ if replica_idx % 2 == 0:
     if (replica_idx + 1) < num_replicas:
         # comm_global.send(snd_buf, dest=src_rank + size_replica)
         # comm_global.recv(rcv_buf, source=src_rank + size_replica, status=status)
-        comm_global.Send((snd_buf, 1, MPI.INT), dest=src_rank + size_replica)
+        request = comm_global.Isend((snd_buf, 1, MPI.INT), dest=src_rank + size_replica)
         comm_global.Recv((rcv_buf, 1, MPI.INT), source=src_rank + size_replica, status=status)
+        request.Wait()
         walkers[swap_idx] = rcv_buf
 
 if replica_idx % 2 != 0:
     # comm_global.recv(rcv_buf, source=src_rank - size_replica, status=status)
     # comm_global.send(snd_buf, dest=src_rank - size_replica)
-    comm_global.Recv((rcv_buf, 1, MPI.INT), source=src_rank - size_replica, status=status)
+    request = comm_global.Irecv((rcv_buf, 1, MPI.INT), source=src_rank - size_replica)
     comm_global.Send((snd_buf, 1, MPI.INT), dest=src_rank - size_replica)
+    request.Wait(status)
     walkers[swap_idx] = rcv_buf
 
 walkers_temp0 = np.zeros_like(all_walkers)
