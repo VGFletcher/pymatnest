@@ -13,6 +13,8 @@ monitor_step_interval=5
 out_file_prefix=lj
 make_output_dir=T
 RE_pressures=0 0.1
+RE_swap_interval=5
+max_volume_per_atom=50
 
 ################################################################################
 

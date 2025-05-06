@@ -6,3 +6,6 @@
 *.so
 test/temp
 experiments
+.vscode
+__pycache__
+.pytest_cache

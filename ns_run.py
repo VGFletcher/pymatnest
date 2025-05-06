@@ -16,6 +16,7 @@ from traceback import print_exception
 import check_memory
 from ase.md.verlet import VelocityVerlet
 import importlib
+import replica_exchange_utils as re_utils
 
 print_prefix=""
 
@@ -647,6 +648,20 @@ def usage():
     sys.stderr.write("track_configs_write=[ T | F ] (F)\n")
     sys.stderr.write("min_nn_dis=float, (0.0, reject initial walkers with a nearest neighbour distance less than this value in Angstroms)")
     sys.stderr.write("calc_nn_dis=[ T | F ], (F, reject walkers with a nearest neighbour distance less than min_nn_dis throughout the entire sampling procedure)")
+
+class FilePrinter:
+    def __init__(self, file_path='output.txt', mode='a', encoding='utf-8'):
+        self.file = open(file_path, mode, encoding=encoding)
+
+    def print(self, *args, sep=' ', end='\n'):
+        self.file.write(sep.join(map(str, args)) + end)
+        self.file.flush()  # optional: ensures data is written immediately
+
+    def close(self):
+        self.file.close()
+
+    def __del__(self):
+        self.close()  # ensure file is closed if object is deleted
 
 def excepthook_mpi_abort(exctype, value, tb):
     print( print_prefix,'Uncaught Exception Type:', exctype)
@@ -2364,7 +2379,7 @@ def additive_init_config(at, Emax):
     at.set_positions(pos)
     return energy
 
-def save_snapshot(snapshot_id, rank, size, comm=None):
+def save_snapshot(snapshot_id, rank, size, outfile, comm=None):
     """
     Save the current walker configurations' as a snapshot in the file ``out_file_prefix.iter.rank.config_file_format``
     """
@@ -2418,7 +2433,13 @@ def clean_prev_snapshot(iter, rank):
             print( print_prefix, ": WARNING: Failed to delete '%s'" % snapshot_file)
 
 
-def do_ns_loop(rank, size, comm, comm_global, outfile):
+def do_ns_loop(
+    rank: int, 
+    size: int, 
+    comm, # : MPI.Comm 
+    comm_global, # : MPI.Comm 
+    outfile: FilePrinter
+):
     """
     This is the main nested sampling loop, doing the iterations.
 
@@ -2429,6 +2450,12 @@ def do_ns_loop(rank, size, comm, comm_global, outfile):
     """
     global print_prefix
     global cur_config_ind
+
+    size_global = comm_global.Get_size()
+    rank_global = comm_global.Get_rank()
+    num_replicas = size_global // size
+    size_replica = size_global // num_replicas
+    replica_idx = rank_global // size_replica
 
     # cant keep atoms fixed and change the simulation cell at the moment
     if (movement_args['keep_atoms_fixed'] > 0
@@ -3129,7 +3156,7 @@ def do_ns_loop(rank, size, comm, comm_global, outfile):
         if comm is not None:
             do_snapshot = comm.bcast(do_snapshot, root=0)
         if do_snapshot:
-            save_snapshot(i_ns_step, rank, size, comm)
+            save_snapshot(i_ns_step, rank, size, outfile, comm)
             last_snapshot_time = time.time()
             clean_prev_snapshot(pprev_snapshot_iter, rank)
             pprev_snapshot_iter = prev_snapshot_iter
@@ -3139,6 +3166,270 @@ def do_ns_loop(rank, size, comm, comm_global, outfile):
             for (ns_analyzer, ns_analyzer_interval) in ns_analyzers:
                 if ns_analyzer_interval > 0 and (i_ns_step+1)%ns_analyzer_interval == 0:
                     ns_analyzer.analyze(walkers, i_ns_step, "NS_loop %d" % i_ns_step)
+
+        # Here we perform the replica-exchange moves between NS runs
+        #
+        # Swapping multiple configurations:
+        # ----------------------------------------------------------------------
+        # - 1.) SWAP PHASES:
+        # ----------------------------------------------------------------------
+        # In contrast to classical RE-MD, where at each point in time, we only a 
+        # have a single sample of the given distribution (e.g. the canonical 
+        # ensemble), in RENS we have a whole pool of samples (the walkers) at each
+        # instance of RE. Hence, we can attempt multiple swaps, we just have to be
+        # careful to not mess up with the statistics. Organizing the swaps into
+        # two phases between neighboring replicas like sketched below is one way 
+        # of doing it. We can perform `RE_n_swap_cycles` of this procedure in a 
+        # sequence.
+        #
+        # {ri}: The entire walker pool of replica i
+        # {ri'}: The entire walker pool of replica i after the first swap phase
+        # {ri''}: ...
+        #
+        # cycle 1:
+        #     Phase 1:
+        #         |  {r0}   |  {r1}   |  {r2}   |  {r3}   |  {r4}   |  {r5}   |
+        #         |         X                   X                   X         |
+        #     Phase 2:
+        #         |  {r0'}  |  r1'    |  r2'    |  r3'    |  r4'    |  r5'    |
+        #         |                   X                   X                   |
+        #
+        # cycle 2:
+        #     Phase 1:
+        #
+        #         | {r0''}  | {r1''}  | {r2''}  | {r3''}  | {r4''}  | {r5''}  |
+        #         |         X                   X                   X         |
+        #     Phase 2:
+        #         | {r0'''} | {r1'''} | {r2'''} |  {3'''} | {r4'''} | {r5'''} |
+        #         |                   X                   X                   |
+        #
+        # ----------------------------------------------------------------------
+        # - 2.) WALKER SUBSETS:
+        # ----------------------------------------------------------------------
+        # Each of the processes belonging to a given replica hosts a subset of the
+        # walker pool. Thus, to keep all processes busy, we attempt swaps between
+        # those subsets during each swap phase (of course only for those replica 
+        # which are part of the given swap phase). To show this visually, lets 
+        # focus on a single pair of replicas, which shall perform RE. Like shown 
+        # above we can indicate this like:
+        #
+        # |               {r0}               |               {r1}               |
+        #                                    X
+        # 
+        # In case of the NS implementation of pymatnest, the walkers are grouped
+        # into subsets, which live on each of the replica_size ranks belonging
+        # to the comm_replica MPI communicator. Say, each replica runs on 4 MPI
+        # processes (replica_size=4), then {ri}, the walker pool of replica i, is 
+        # split into subsets {{ri0}, {ri1}, {ri2}, {ri3}}:
+        #
+        # |  { {r00}, {r01}, {r02}, {r03} }  |  { {r10}, {r11}, {r12}, {r13} }  |
+        #                                    X
+        # 
+        # Since ideally, the samples contained in each subset are independent 
+        # (iid), we should be allowed to swap between all subsets of replica i and 
+        # j at once. Realigning the visualization, this corresponds to the 
+        # following scenario, where we now indicate swaps between the sets 
+        # vertically.
+        # 
+        # |  { {r00}, {r01}, {r02}, {r03} }  | 
+        #        X      X      X      X
+        # |  { {r10}, {r11}, {r12}, {r13} }  |
+        #
+        if len(ns_args["RE_pressures"]) > 1:
+            if i_ns_step % ns_args["RE_swap_interval"] == 0:
+
+                do_velocities = movement_args["do_velocities"]
+                do_GMC = movement_args["do_GMC"]
+                n_extra_data = ns_args["n_extra_data"]
+                swap_atomic_numbers = ns_args["swap_atomic_numbers"]
+                track_configs = ns_args["track_configs"]
+                RE_pressures = ns_args["RE_pressures"]
+
+                # There is for sure a more elegant way of collecting the Emax
+                all_elims = np.zeros(size_global)
+                comm_global.Allgather(np.array(Emax_of_step), all_elims)
+                elims = all_elims[::size_replica]
+                print(elims)
+
+                # ------------------------------------------------------------
+                # phase 1
+                # ------------------------------------------------------------
+                status = MPI.Status()
+                # swap_idx = np.random.randint(0, walkers_per_task)
+                # swap_idx_phase1 = 0
+                swap_idx_phase1 = rng.int_uniform(0, size_replica)
+
+                n_send = re_utils.get_buffer_size(
+                    n_atoms,
+                    do_velocities,
+                    do_GMC,
+                    n_extra_data,
+                    swap_atomic_numbers,
+                    track_configs
+                )
+                rcv_buf = np.zeros(n_send)
+                walker_snd = walkers[swap_idx_phase1]
+                snd_buf = re_utils.construct_snd_buf(
+                    walker_snd,
+                    n_send,
+                    n_atoms, 
+                    do_velocities,
+                    do_GMC,
+                    n_extra_data,
+                    swap_atomic_numbers,
+                    track_configs
+                )
+
+                tried = 0
+                acc = 0
+                src_rank = replica_idx * size_replica + rank
+                if replica_idx % 2 == 0:
+                    if (replica_idx + 1) < num_replicas:
+                        tried = 1 
+                        comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank + size_replica)
+                        comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank + size_replica, status=status)
+                        walker_rcv = re_utils.read_rcv_buf(
+                            walker_snd.copy(), # not sure whether swap will be accepted -> copy
+                            rcv_buf,
+                            n_atoms, 
+                            do_velocities,
+                            do_GMC,
+                            n_extra_data,
+                            swap_atomic_numbers,
+                            track_configs
+                        )
+                        acc = re_utils.swap_acceptance(
+                            walker_snd, 
+                            walker_rcv, 
+                            RE_pressures[replica_idx], 
+                            RE_pressures[replica_idx + 1],
+                            elims[replica_idx], 
+                            elims[replica_idx + 1],
+                        ) 
+                        if acc:
+                            walkers[swap_idx_phase1] = walker_rcv
+
+                if replica_idx % 2 != 0:
+                    comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank - size_replica, status=status)
+                    comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank - size_replica)
+                    walker_rcv = re_utils.read_rcv_buf(
+                        walker_snd.copy(), 
+                        rcv_buf,
+                        n_atoms, 
+                        do_velocities,
+                        do_GMC,
+                        n_extra_data,
+                        swap_atomic_numbers,
+                        track_configs
+                    )
+                    acc = re_utils.swap_acceptance(
+                        walker_snd, 
+                        walker_rcv, 
+                        RE_pressures[replica_idx - 1], 
+                        RE_pressures[replica_idx],
+                        elims[replica_idx - 1], 
+                        elims[replica_idx],
+                    ) 
+                    if acc:
+                        walkers[swap_idx_phase1] = walker_rcv
+
+
+                phase1_tries = np.zeros(size_global, dtype=int)
+                phase1_accs = np.zeros(size_global, dtype=int)
+                comm_global.Gather(
+                    np.array(tried, dtype=int), phase1_tries, root=0
+                )
+                comm_global.Gather(
+                    np.array(acc, dtype=int), phase1_accs, root=0
+                )
+                if rank_global == 0:
+                    print(phase1_tries)
+                    print(phase1_accs)
+
+                # ------------------------------------------------------------
+                # phase 2
+                # ------------------------------------------------------------
+                tried = 0
+                acc = 0
+                if num_replicas > 2:
+                    status = MPI.Status()
+                    rcv_buf = np.zeros(n_send)
+                    # swap_idx = np.random.randint(0, walkers_per_task)
+                    # swap_idx_phase2 = 0
+                    swap_idx_phase2 = rng.int_uniform(0, size_replica)
+                    snd_buf = re_utils.construct_snd_buf(
+                        walkers[swap_idx_phase2],
+                        n_send,
+                        n_atoms, 
+                        do_velocities,
+                        do_GMC,
+                        n_extra_data,
+                        swap_atomic_numbers,
+                        track_configs
+                    )
+
+                    src_rank = replica_idx * size_replica + rank
+                    if replica_idx % 2 != 0:
+                        if (replica_idx + 1) < num_replicas:
+                            tried = 1
+                            comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank + size_replica)
+                            comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank + size_replica, status=status)
+                            walker_rcv = re_utils.read_rcv_buf(
+                                walker_snd.copy(),
+                                rcv_buf,
+                                n_atoms, 
+                                do_velocities,
+                                do_GMC,
+                                n_extra_data,
+                                swap_atomic_numbers,
+                                track_configs
+                            )
+                            acc = re_utils.swap_acceptance(
+                                walker_snd, 
+                                walker_rcv, 
+                                RE_pressures[replica_idx], 
+                                RE_pressures[replica_idx + 1],
+                                elims[replica_idx], 
+                                elims[replica_idx + 1],
+                            ) 
+                            if acc:
+                                walkers[swap_idx_phase2] = walker_rcv
+
+                    if replica_idx % 2 == 0:
+                        if not replica_idx == 0:
+                            comm_global.Recv((rcv_buf, MPI.DOUBLE), source=src_rank - size_replica, status=status)
+                            comm_global.Send((snd_buf, MPI.DOUBLE), dest=src_rank - size_replica)
+                            walker_rcv = re_utils.read_rcv_buf(
+                                walker_snd.copy(), 
+                                rcv_buf,
+                                n_atoms, 
+                                do_velocities,
+                                do_GMC,
+                                n_extra_data,
+                                swap_atomic_numbers,
+                                track_configs
+                            )
+                            acc = re_utils.swap_acceptance(
+                                walker_snd, 
+                                walker_rcv, 
+                                RE_pressures[replica_idx - 1], 
+                                RE_pressures[replica_idx],
+                                elims[replica_idx - 1], 
+                                elims[replica_idx],
+                            ) 
+                            if acc:
+                                walkers[swap_idx_phase2] = walker_rcv
+
+
+                    phase2_tries = np.zeros(size_global, dtype=int)
+                    phase2_accs = np.zeros(size_global, dtype=int)
+                    comm_global.Gather(np.array(tried, dtype=int), phase2_tries, root=0)
+                    comm_global.Gather(np.array(acc, dtype=int), phase2_accs, root=0)
+
+                    if rank_global == 0:
+                        print(phase2_tries)
+                        print(phase2_accs)
+
         i_ns_step += 1
         ### END OF MAIN LOOP
 
@@ -3162,11 +3453,6 @@ def do_ns_loop(rank, size, comm, comm_global, outfile):
                     np.savetxt(E_dump_io, E_dump_list_all[i,:])
             E_dump_io.flush()
     
-    # Here we perform the replica-exchange moves between NS runs
-    if len(ns_args["RE_pressures"]) > 1:
-        if ns_args["RE_swap_interval"] % i_ns_step == 0:
-            pass
-
     cur_time = time.time()
     if rank == 0:
         outfile.print( "LOOP TIME total ",cur_time-initial_time-total_step_size_setting_duration, " per iter ", (cur_time-initial_time-total_step_size_setting_duration)/(i_ns_step+1))
@@ -3174,20 +3460,6 @@ def do_ns_loop(rank, size, comm, comm_global, outfile):
 
     return i_ns_step-1
 
-
-class FilePrinter:
-    def __init__(self, file_path='output.txt', mode='a', encoding='utf-8'):
-        self.file = open(file_path, mode, encoding=encoding)
-
-    def print(self, *args, sep=' ', end='\n'):
-        self.file.write(sep.join(map(str, args)) + end)
-        self.file.flush()  # optional: ensures data is written immediately
-
-    def close(self):
-        self.file.close()
-
-    def __del__(self):
-        self.close()  # ensure file is closed if object is deleted
 
 def main():
         """ Main function """
@@ -3316,10 +3588,11 @@ def main():
             # frequently should preferrably be put on the same CPU/node, 
             # whereas we can also afford the occasional RE moves to be executed 
             # between different nodes).
-            dims = [num_replicas, size_replica]
-            periods = [False, False]
-            comm_cart = comm_global.Create_cart(dims, periods, reorder=True)
-            comm_replica = comm_cart.Sub([False, True])
+            # dims = [num_replicas, size_replica]
+            # periods = [False, False]
+            # comm_cart = comm_global.Create_cart(dims, periods, reorder=True)
+            # comm_replica = comm_cart.Sub([False, True])
+            comm_replica = comm_global.Split(color=replica_idx, key=0)
             
             rank = comm_replica.Get_rank()
             size = comm_replica.Get_size()
@@ -3377,29 +3650,6 @@ def main():
         if ns_args['out_file_prefix'] != '':
             ns_args['out_file_prefix'] += '.'
         
-        ######################################################################
-        # New arguments for RENS implementation (NU)
-        if str_to_logical(args.pop('make_output_dir', "F")):
-            outfile_dir = f"output_data_{replica_idx}/"
-            ns_args['out_file_prefix'] = outfile_dir + ns_args['out_file_prefix']
-            if rank == 0:
-                os.mkdir(outfile_dir)
-        
-        ns_args['RE_n_swap_cycles'] = int(args.pop('RE_n_swap_cycles', 10))
-        ns_args['RE_swap_interval'] = int(args.pop('RE_swap_interval', 5))
-
-        if len(ns_args["RE_pressures"]) > 1:
-            no_intervals = ns_args['RE_swap_interval'] < 1
-            no_cycles = ns_args['RE_n_swap_cycles'] < 1
-            if no_intervals or no_cycles:
-                print(
-                    "WARNING: You are running several NS simulations in parallel "
-                    f"but {no_intervals=} and {no_cycles=}. Hence, you are not "
-                    "performing any replica-exchange."
-                )
-
-        ######################################################################
-
         ns_args['profile'] = int(args.pop('profile', -1))
         ns_args['debug'] = int(args.pop('debug', -1))
         ns_args['snapshot_interval'] = int(args.pop('snapshot_interval', -1))
@@ -3677,7 +3927,6 @@ def main():
         movement_args['MD_atom_energy_fuzz'] = float(args.pop('MD_atom_energy_fuzz', 1.0e-2))
         movement_args['MD_atom_reject_energy_violation'] = str_to_logical(args.pop('MD_atom_reject_energy_violation', "F"))
 
-        movement_args['MC_cell_P'] = float(args.pop('MC_cell_P', 0.0))
         movement_args['MC_cell_flat_V_prior'] = str_to_logical(args.pop('MC_cell_flat_V_prior', "F"))
 
         default_value = ns_args['max_volume_per_atom']/20.0  # 5% of maximum allowed volume per atom
@@ -3729,6 +3978,34 @@ def main():
             movement_args['wall_dist'] = 10.00 # LIVIA - review this hard coded value 
         else:
             movement_args['wall_dist'] = 0.0
+
+        ######################################################################
+        # New arguments for RENS implementation (NU)
+        if str_to_logical(args.pop('make_output_dir', "F")):
+            outfile_dir = f"output_data_{replica_idx}/"
+            ns_args['out_file_prefix'] = outfile_dir + ns_args['out_file_prefix']
+            if rank == 0:
+                os.mkdir(outfile_dir)
+        
+        ns_args['RE_n_swap_cycles'] = int(args.pop('RE_n_swap_cycles', 10))
+        ns_args['RE_swap_interval'] = int(args.pop('RE_swap_interval', 5))
+
+        if len(ns_args["RE_pressures"]) > 1:
+            no_intervals = ns_args['RE_swap_interval'] < 1
+            no_cycles = ns_args['RE_n_swap_cycles'] < 1
+            if no_intervals or no_cycles:
+                print(
+                    "WARNING: You are running several NS simulations in parallel "
+                    f"but {no_intervals=} and {no_cycles=}. Hence, you are not "
+                    "performing any replica-exchange."
+                )
+            movement_args['MC_cell_P'] = ns_args["RE_pressures"][replica_idx]
+            args.pop('MC_cell_P')
+        else:
+            movement_args['MC_cell_P'] = float(args.pop('MC_cell_P', 0.0))
+            
+
+        ######################################################################
 
         if len(args) > 0:
             exit_error(str(args)+"\nUnknown arguments read in\n", 2)
@@ -4256,7 +4533,7 @@ def main():
                     # TODO: to be implemented by NU
                     save_snapshot(
                         i_initial_walk-ns_args['initial_walk_N_walks'],
-                        rank, size, comm_replica
+                        rank, size, outfile, comm_replica
                     )
 
             # restore walk lengths for rest of NS run
@@ -4382,7 +4659,7 @@ def main():
 
         # cleanup post loop
         # TODO: to be implemented by NU
-        save_snapshot(final_iter, rank, size, comm_replica)  # this is the final configuration
+        save_snapshot(final_iter, rank, size, outfile, comm_replica)  # this is the final configuration
 
         for at in walkers:
             outfile.print(rank, ": final energy ", at.info['ns_energy'])
