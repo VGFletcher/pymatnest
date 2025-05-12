@@ -17,7 +17,5 @@ I did not retain all functionality, so a few things might be broken. These are n
 Cosmetic changes to be tackled in the future that might make the implementation a bit less clunky:
 - remove MC_cell_P in favor of RE_pressures
 
-
 Even though some things might seem to work already, they might need further thought:
 - I did not carefully check random state yet
-- 

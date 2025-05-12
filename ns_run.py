@@ -3637,7 +3637,7 @@ def main():
             # TODO: to be implemented by NU
             args = comm_global.bcast(args, root=0)  # send args to other processes
 
-#DOC ``main``: parse arguments
+        #DOC ``main``: parse arguments
         # parse args
         ns_args = {}
         
@@ -3669,20 +3669,6 @@ def main():
             size_replica = size // num_replicas
             replica_idx = rank // size_replica
             
-            # Here, we set up a 2D cartesian topology for our MPI processes
-            # with shape (num_replicas, size_replica).
-            # We obtain the communicator for each individual NS run by slicing
-            # this grid along the first axis ([False, True]), giving us 
-            # num_replica communicators comm_replica. Hopefully, the cartesian
-            # will handle the grouping of processes in a favorable manner for
-            # us (i.e. the NS random walks, which need to exchange data more 
-            # frequently should preferrably be put on the same CPU/node, 
-            # whereas we can also afford the occasional RE moves to be executed 
-            # between different nodes).
-            # dims = [num_replicas, size_replica]
-            # periods = [False, False]
-            # comm_cart = comm_global.Create_cart(dims, periods, reorder=True)
-            # comm_replica = comm_cart.Sub([False, True])
             comm_replica = comm_global.Split(color=replica_idx, key=0)
             
             rank = comm_replica.Get_rank()
@@ -3695,6 +3681,9 @@ def main():
             # same interface as classic python `print`. This pipes the output
             # of each replica into an individual file.
             outfile = FilePrinter(f"ns_{replica_idx}.out")
+        else:
+            comm_replica = comm_global
+            outfile = FilePrinter(f"ns.out")
         
 
         ns_args['check_memory'] = str_to_logical(args.pop('check_memory', 'F'))

@@ -52,6 +52,8 @@ def get_buffer_size(
     swap_atomic_numbers: bool,
     track_configs: bool
 ):
+    """Compute the buffer size based on keywords, which determine the types
+    of arrays/properties carried by a walker configuration."""
     n_send = 3*(n_atoms + 3)
     n_send += 1 # for ns_energy
     if do_velocities:
@@ -79,6 +81,9 @@ def construct_snd_buf(
     swap_atomic_numbers: bool,
     track_configs: bool
 ) -> np.ndarray:
+    """This is a copy of the send buffer creation used in `do_ns_loop`. It is
+    only modified to collect the `ns_energy` entry of `at.info` as well.
+    """
     buf = np.zeros(n_send)
     buf_o = 0
     buf[buf_o:buf_o+3*n_atoms] = at.get_positions().reshape((3*n_atoms)); buf_o += 3*n_atoms
@@ -111,6 +116,10 @@ def read_rcv_buf(
     swap_atomic_numbers: bool,
     track_configs: bool
 ) -> Atoms:
+    """This is a copy of the code to read the received buffer used in 
+    `do_ns_loop`. It is only modified to also collect `ns_energy` into 
+    `at.info`.
+    """
     buf_o = 0
     at.set_positions(buf[buf_o:buf_o+3*n_atoms].reshape((n_atoms, 3))); buf_o += 3*n_atoms
     at.set_cell(buf[buf_o:buf_o+3*3].reshape((3, 3))); buf_o += 3*3
