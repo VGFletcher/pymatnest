@@ -2595,7 +2595,7 @@ def do_ns_loop(
             outfile.print("WARNING: Emax not decreasing ", Emax_of_step, Emax_next)
         Emax_of_step = Emax_next
 
-        if ns_args['min_Emax'] is not None:
+        if ns_args['min_Emax'] is not None and i_ns_step%1000 == 0:
             break_loop = False
             if Emax_of_step < ns_args['min_Emax']:
                 if not doing_replica_exchange:
@@ -3300,8 +3300,8 @@ def do_ns_loop(
                 status = MPI.Status()
                 # swap_idx = np.random.randint(0, walkers_per_task)
                 # swap_idx_phase1 = 0
-                swap_idx_phase1 = rng.int_uniform(0, size_replica)
-
+                swap_idx_phase1 = rng.int_uniform(0, len(walkers))
+                
                 n_send = re_utils.get_buffer_size(
                     n_atoms,
                     do_velocities,
@@ -3431,7 +3431,7 @@ def do_ns_loop(
                     rcv_buf = np.zeros(n_send)
                     # swap_idx = np.random.randint(0, walkers_per_task)
                     # swap_idx_phase2 = 0
-                    swap_idx_phase2 = rng.int_uniform(0, size_replica)
+                    swap_idx_phase2 = rng.int_uniform(0, len(walkers))
                     walker_snd = walkers[swap_idx_phase2]
                     snd_buf = re_utils.construct_snd_buf(
                         walker_snd,
