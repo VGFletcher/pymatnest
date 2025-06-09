@@ -4065,7 +4065,11 @@ def main():
             outfile_dir = f"output_data_{replica_idx}/"
             ns_args['out_file_prefix'] = outfile_dir + ns_args['out_file_prefix']
             if rank == 0:
-                os.mkdir(outfile_dir)
+                if not os.path.exists(outfile_dir):
+                    os.mkdir(outfile_dir)
+                else:
+                    outfile.print(f"Detected Directory {outfile_dir}")
+                    
         
         ns_args['RE_n_swap_cycles'] = int(args.pop('RE_n_swap_cycles', 10))
         ns_args['RE_swap_interval'] = int(args.pop('RE_swap_interval', 5))
