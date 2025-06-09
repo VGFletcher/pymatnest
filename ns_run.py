@@ -3336,6 +3336,9 @@ def do_ns_loop(
                         ) 
                         if acc:
                             walker_rcv.info["ns_energy"] = h0
+                            #Without a deepcopy, the calculator object is lost, deepcopy not worth it
+                            if do_calc_ASE or do_calc_lammps:
+                                walker_rcv.calc = pot
                             walkers[swap_idx_phase1] = walker_rcv
 
                 if replica_idx % 2 != 0:
@@ -3367,6 +3370,9 @@ def do_ns_loop(
                     ) 
                     if acc:
                         walker_rcv.info["ns_energy"] = h1
+                        #Without a deepcopy, the calculator object is lost, deepcopy not worth it
+                        if do_calc_ASE or do_calc_lammps:
+                            walker_rcv.calc = pot
                         walkers[swap_idx_phase1] = walker_rcv
                     
                     # set acc to zero again, such that only the acc from the 
@@ -3449,6 +3455,9 @@ def do_ns_loop(
                             ) 
                             if acc:
                                 walker_rcv.info["ns_energy"] = h0
+                                #Without a deepcopy, the calculator object is lost, deepcopy not worth it
+                                if do_calc_ASE or do_calc_lammps:
+                                    walker_rcv.calc = pot
                                 walkers[swap_idx_phase2] = walker_rcv
 
                     if replica_idx % 2 == 0:
@@ -3480,6 +3489,9 @@ def do_ns_loop(
                             ) 
                             if acc:
                                 walker_rcv.info["ns_energy"] = h1
+                                #Without a deepcopy, the calculator object is lost, deepcopy not worth it
+                                if do_calc_ASE or do_calc_lammps:
+                                    walker_rcv.calc = pot
                                 walkers[swap_idx_phase2] = walker_rcv
 
                             acc = 0
