@@ -2595,12 +2595,22 @@ def do_ns_loop(
             outfile.print("WARNING: Emax not decreasing ", Emax_of_step, Emax_next)
         Emax_of_step = Emax_next
 
-        if ns_args['min_Emax'] is not None and Emax_of_step < ns_args['min_Emax']:
-            if rank == 0:
-                # if the termination was set by a minimum energy, and it is reached, stop.
-                outfile.print("Leaving loop because Emax=", Emax_of_step, " < min_Emax =", ns_args['min_Emax'])
-            i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
-            break
+        if ns_args['min_Emax'] is not None:
+            break_loop = False
+            if Emax_of_step < ns_args['min_Emax']:
+                if not doing_replica_exchange:
+                    if rank == 0:
+                        # if the termination was set by a minimum energy, and it is reached, stop.
+                        outfile.print("Leaving loop because Emax=", Emax_of_step, " < min_Emax =", ns_args['min_Emax'])
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
+                else:
+                    break_loop = True
+            if doing_replica_exchange:
+                replica_answers = comm_global.allgather(break_loop)
+                if all(replica_answers):
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
 
         if rank == 0:
             cur_time = time.time()
