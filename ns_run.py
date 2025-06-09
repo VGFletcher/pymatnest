@@ -2608,7 +2608,7 @@ def do_ns_loop(
         else:
             output_this_iter = False
 
-        if ns_args['converge_down_to_T'] > 0:
+        if ns_args['converge_down_to_T'] > 0 and i_ns_step%1000 == 0:
             # see ns_analyse.py calc_log_a() for math
             log_a = log_X_n_term_sum*i_ns_step + log_X_n_term_cumsum_modified
             # DEBUG if rank == 0:
@@ -2618,11 +2618,21 @@ def do_ns_loop(
             log_Z_term_last = log_a[-1]-converge_down_to_beta*Emax[-1]
             if output_this_iter:
                 outfile.print("log_Z_term max ", log_Z_term_max, "last ", log_Z_term_last, "diff ", log_Z_term_max-log_Z_term_last)
+            break_loop_temp = False
             if log_Z_term_last < log_Z_term_max - 10.0:
-                if rank == 0:
-                    outfile.print(print_prefix, "Leaving loop because Z(%f) is converged" % ns_args['converge_down_to_T'])
-                i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
-                break
+                if not doing_replica_exchange:
+                    if rank == 0:
+                        outfile.print(print_prefix, "Leaving loop because Z(%f) is converged" % ns_args['converge_down_to_T'])
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
+                else:
+                    break_loop_temp = True
+            if doing_replica_exchange:
+                replica_answers = comm_global.allgather(break_loop_temp)
+                if all(replica_answers):
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
+                    
 
         if ns_args['T_estimate_finite_diff_lag'] > 0:
             Emax_history.append(Emax_of_step)
@@ -3571,7 +3581,7 @@ def main():
         global max_n_cull_per_task
         # global size, rank, comm
         global rng, np, sys, ns_analyzers
-        global n_cull, n_walkers, n_walkers_per_task
+        global n_cull, n_walkers, n_walkers_per_task, doing_replica_exchange
         global n_extra_walk_per_task
         global do_calc_ASE, do_calc_lammps, do_calc_internal, do_calc_fortran
         global energy_io, traj_io, walkers
@@ -3660,7 +3670,9 @@ def main():
             float(i) for i in args.pop("RE_pressures", "0.0").split()
         ]
         num_replicas = len(ns_args["RE_pressures"])
+        doing_replica_exchange = False
         if num_replicas > 1:
+            doing_replica_exchange = True
             if rank == 0:
                 print("Starting a replica-exchange nested sampling (RENS) run")
 
