@@ -71,6 +71,10 @@ def usage():
     ``converge_down_to_T=flot``
        | MANDATORY
        | temperature down to which Z(T) should be converged.  Either this or ``n_iter_times_fraction_killed`` is required.
+    
+    ``check_frequency=int``
+       | After check_frequency iterations the stopping criteria is checked.
+       | Default: 1000
 
     ``T_estimate_finite_diff_lag=int``
        | default: 1000
@@ -522,6 +526,7 @@ def usage():
     sys.stderr.write("n_extra_walk_per_task=int (0)\n")
     sys.stderr.write("n_iter_times_fraction_killed=int (MANDATORY, this or converge_down_to_T required)\n")
     sys.stderr.write("converge_down_to_T=float (MANDATORY, this or n_iter_times_fraction_killed required)\n")
+    sys.stderr.write("check_frequency=int, (1000, check stopping criteria after check_frequency iterations)\n")
     sys.stderr.write("T_estimate_finite_diff_lag=int (1000, lag for doing finite difference in current T estimate\n")
     sys.stderr.write("min_Emax=float (None.  Termination condition based on Emax)\n")
     sys.stderr.write("out_file_prefix=str (None)\n")
@@ -2595,7 +2600,7 @@ def do_ns_loop(
             outfile.print("WARNING: Emax not decreasing ", Emax_of_step, Emax_next)
         Emax_of_step = Emax_next
 
-        if ns_args['min_Emax'] is not None and i_ns_step%1000 == 0:
+        if ns_args['min_Emax'] is not None and i_ns_step%ns_args['check_frequency'] == 0:
             break_loop = False
             if Emax_of_step < ns_args['min_Emax']:
                 if not doing_replica_exchange:
@@ -2618,7 +2623,7 @@ def do_ns_loop(
         else:
             output_this_iter = False
 
-        if ns_args['converge_down_to_T'] > 0 and i_ns_step%1000 == 0:
+        if ns_args['converge_down_to_T'] > 0 and i_ns_step%ns_args['check_frequency'] == 0:
             # see ns_analyse.py calc_log_a() for math
             log_a = log_X_n_term_sum*i_ns_step + log_X_n_term_cumsum_modified
             # DEBUG if rank == 0:
@@ -3739,6 +3744,7 @@ def main():
         else:
             ns_args['n_iter'] = -1
         ns_args['converge_down_to_T'] = float(args.pop('converge_down_to_T', -1))
+        ns_args['check_frequency'] = int(args.pop('check_frequency', 1000))
         if ns_args['n_iter'] <= 0 and ns_args['converge_down_to_T'] <= 0:
             exit_error("need either n_iter_times_fraction_killed or converge_down_to_T", 1)
 
@@ -4099,12 +4105,12 @@ def main():
             outfile_dir = f"output_data_{replica_idx}/"
             ns_args['out_file_prefix'] = outfile_dir + ns_args['out_file_prefix']
             if rank == 0:
-                if not os.path.exists(outfile_dir):
+                try:
                     os.mkdir(outfile_dir)
-                else:
+                except:
                     outfile.print(f"Detected Directory {outfile_dir}")
+                    pass
                     
-        
         ns_args['RE_n_swap_cycles'] = int(args.pop('RE_n_swap_cycles', 10))
         ns_args['RE_swap_interval'] = int(args.pop('RE_swap_interval', 5))
 
