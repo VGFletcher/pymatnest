@@ -1,5 +1,5 @@
 from ast import Not
-import re, math, time, os
+import re, math, time, os, glob
 import pprint
 import numpy as np, ase, ase.io
 import ns_rng
@@ -88,7 +88,7 @@ def usage():
        | String used as prefix for the different output files.
        | No default.
 
-    ``energy_calculator= ( ASE | lammps | internal | fortran)``
+    ``energy_calculator= ( ASE | lammps | internal | fortran | ASE_JUL)``
        | Energy calculator.
        | default: fortran
 
@@ -510,7 +510,53 @@ def usage():
      | RE moves will be called after every RE_swap_interval-th iteration.
      | default: 5
 
+    ``ACE_json_path=string``
+     | When the ASE_JUL calculator is used, this is the path to the .json file of your ACE potential.
+     | default: None
     
+    ``ACE_env_path=string``
+     | When the ASE_JUL calculator is used, this is the path to the Julia project that must be setup prior to using this calculator
+     | default: .
+
+    ``ACE_committee=[ T | F ]``
+     | If the ACE potential has a committee of potentials present, you can declare this as true and the committee STD per atom associated with every configuration produced will be calculated
+     | default: False
+
+    ``min_std=float``
+     | If the ACE potential has a committee, and you have set ACE_committee to True, you can choose to reject configurations if the committees predictions have a standard deviation per atom greater than this value in eV/atom
+     | default: np.inf
+
+     ``save_high_std=[ T | F ]``
+     | If the ACE potential has a committee, and you have set ACE_committee to True, and you have set a min_std value less than np.inf, you can choose to save configurations that are rejected only because the committee predictions have a standard deviation per atom greater than min_std.
+     | default: False
+    
+     ``committee_std_stopping_criteria=[ T | F ]``
+     | If the ACE potential has a committee, and you have set ACE_committee to True, you can choose to stop a nested sampling calculation when a fraction of the walkers (committee_std_frac) have a committee STD per atom greater than committee_std_barrier. Other stopping criteria can be enabled simultaneously.
+     | default: False
+
+     ``committee_std_barrier=float``
+     | committee_std_frac of walkers must have a committee STD per atom greater than this value (in eV/atom) to stop the nested sampling run.
+     | default: np.inf
+
+     ``committee_std_frac=float``
+     | The fraction of walkers that must have a committee STD per atom greater than the committee_std_barrier to stop the nested sampling run.
+     | default: 1.0
+
+     ``MD_wall_Z=[ T | F ]``
+     | Rejection of configurations in which a moving atom(s) is outside/inside the defined region.
+     | default: False
+
+     ``boundary_z1=float``
+     | First z boundary
+     | default: np.inf
+
+     ``boundary_z2=float``
+     | Second z boundary
+     | default: 0
+
+     ``exclude_z=[ exterior | interior ]``
+     | Rejection of configurations in which a moving atom(s) is outside (exterior) or inside (interior) the defined boundaries.
+     | default: exterior
     """
     sys.stderr.write("Usage: %s [ -no_mpi ] < input\n" % sys.argv[0])
     sys.stderr.write("input:\n")
@@ -651,8 +697,16 @@ def usage():
     sys.stderr.write("no_extra_walks_at_all=[ T | F ] (F)\n")
     sys.stderr.write("track_configs=[ T | F ] (F)\n")
     sys.stderr.write("track_configs_write=[ T | F ] (F)\n")
-    sys.stderr.write("min_nn_dis=float, (0.0, reject initial walkers with a nearest neighbour distance less than this value in Angstroms)")
-    sys.stderr.write("calc_nn_dis=[ T | F ], (F, reject walkers with a nearest neighbour distance less than min_nn_dis throughout the entire sampling procedure)")
+    sys.stderr.write("min_nn_dis=float, (0.0, reject initial walkers with a nearest neighbour distance less than this value in Angstroms)\n")
+    sys.stderr.write("calc_nn_dis=[ T | F ], (F, reject walkers with a nearest neighbour distance less than min_nn_dis throughout the entire sampling procedure)\n")
+    sys.stderr.write("ACE_json_path=string, (None, path to the .json file containing the ACE potential to be used with ACE_JUL calculator)\n")
+    sys.stderr.write("ACE_env_path=string, ('.', path to the julia project, which has the required modules to use the ACE calculator\n")
+    sys.stderr.write("ACE_committee=[ T | F ], (F, Declare if the potential has a committee present to calculate the committees standard deviation of energy predictions made on any configuration)\n")
+    sys.stderr.write("min_std=float, (np.inf, choose to reject walked clones if the committees standard deviation of energy predictions is above this value)\n")
+    sys.stderr.write("save_high_std=[ T | F ], (F, Choose to save configurations that were rejected only because of the min_std value, cannot be True if min_std=np.inf)\n")
+    sys.stderr.write("committee_std_stopping_criteria=[ T | F ], (F, Choose to enable a stopping criteria based on the fraction of walkers above a committee std barrier)\n")
+    sys.stderr.write("committee_std_barrier=float, (np.inf, if using committee_std_stopping_criteria, this is the value above which committee_std_frac of walkers must be to stop the run)\n")
+    sys.stderr.write("committee_std_frac=float, (1.0, if using committee_std_stopping_criteria, this the fraction of walkers whose committee std must be above committee_std_barrier to stop the run)\n")
 
 class FilePrinter:
     def __init__(self, file_path='output.txt', mode='a', encoding='utf-8'):
@@ -724,9 +778,8 @@ def energy_internal(at):
 
 def eval_energy_PE(at):
     if do_calc_ASE or do_calc_lammps:
-        if do_calc_lammps:
-            #NB only MD can make crazy positions, so maybe just do this after MD propagation?
-            at.wrap()
+        #NB only MD can make crazy positions, so maybe just do this after MD propagation?
+        at.wrap()
         energy = at.get_potential_energy()
     elif do_calc_internal:
         energy = energy_internal(at)
@@ -772,9 +825,8 @@ def eval_energy(at, do_KE=True, do_PE=True):
 
 def eval_forces(at):
     if do_calc_ASE or do_calc_lammps:
-        if do_calc_lammps:
-            #NB only MD can make crazy positions, so maybe just do this after MD propagation?
-            at.wrap()
+        #NB only MD can make crazy positions, so maybe just do this after MD propagation?
+        at.wrap()
         forces = at.get_forces()
     elif do_calc_internal:
         exit_error('no forces for do_calc_internal', 10)
@@ -1082,6 +1134,13 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         pre_MD_extra_data = at.arrays['ns_extra_data'].copy()
 
     pre_MD_E = at.info['ns_energy']
+    
+    #VGF If ACE committee is enabled then calculate uncertainty of config before walking or if present save it for later
+    if ns_args['ACE_committee']:
+        try:
+            pre_uq_val = at.info['committee_std']
+        except:
+            pre_uq_val = at.calc.get_property('co_ene_std', at)/len(at)
     #DOC propagate in time atom_traj_len time steps of length MD_atom_timestep
     #DOC
     if movement_args['python_MD']:
@@ -1137,7 +1196,7 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
     #DOC
     reject_Emax = (final_E >= Emax)
     reject_KEmax = (KEmax > 0.0 and final_KE >= KEmax)
-
+    
     #VGF calculate nn_distances and reject if enabled, otherwise skip calculation and dont reject based on nn distance
     if ns_args['calc_nn_dis']:
         distances = ase.geometry.get_distances(at.get_positions(), pbc=True, cell=at.get_cell())
@@ -1148,12 +1207,49 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         reject_len = min_bond < ns_args['min_nn_dis']
     else:
         reject_len = False
-    #VGF end
+
+    #VGF calculate the ACE committee standard deviation in energy predictions and maybe reject if min_std provided, if enabled
+    if ns_args['ACE_committee']:
+        uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+
+        if uq_val > ns_args['min_std']:
+            reject_uq = True
+        else:
+            reject_uq = False
+    else:
+        reject_uq = False
+
+    #BRIGHT reject if outside the defined area
+    reject_wall = False
+    if ns_args['MD_wall_Z']:
+        if movement_args['keep_atoms_fixed'] > 0:
+            moving_atoms = at[movement_args['keep_atoms_fixed']:]
+        else:
+            moving_atoms = at
+        position_of_moving_atom = moving_atoms.get_positions(wrap=True)
+        z_position_of_moving_atom_all = position_of_moving_atom[:,2]
+        z_position_in_box = sum((z_position_of_moving_atom_all < upper_bound_z) & (z_position_of_moving_atom_all > lower_bound_z))
+        if z_position_in_box % len(z_position_of_moving_atom_all) != 0:
+            reject_wall = True
+        else:
+            if z_position_in_box == 0:
+                reject_wall = True
+            else:
+                reject_wall = False
+            if ns_args['exclude_z'] == 'interior':
+                reject_wall = not reject_wall
+    #BRIGHT END
 
     #DOC \item if reject
-    if reject_fuzz or reject_Emax or reject_KEmax or reject_len:  # reject
+    if reject_fuzz or reject_Emax or reject_KEmax or reject_len or reject_uq or reject_wall:  # reject
         #DOC \item set positions, velocities, energy back to value before perturbation (maybe should be after?)
         # print(print_prefix, ": WARNING: reject MD traj Emax ", Emax, " initial E ", orig_E, " velo perturbed E ", pre_MD_E, " final E ",final_E, " KEmax ", KEmax, " KE ", final_KE)
+
+        #VGF If configuration is rejected only due to the std value, save this configuration if the user has enabled this
+        if not (reject_fuzz or reject_Emax or reject_KEmax or reject_len) and reject_uq and ns_args['save_high_std']:
+            at.info['committee_std'] = uq_val
+            ase.io.write(f"{ns_args['out_file_prefix']}hole.{rank}.{ns_args['config_file_format']}", at, append=True, parallel=False, format=ns_args['config_file_format'])
+            
         at.set_positions(pre_MD_pos)
         if movement_args['MD_atom_velo_flip_accept']:
             at.set_velocities(pre_MD_velo)  # TODO: should we be redundant in zeroing?
@@ -1162,6 +1258,9 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         if ns_args['n_extra_data'] > 0:
             at.arrays['ns_extra_data'][...] = pre_MD_extra_data
         at.info['ns_energy'] = pre_MD_E
+        #VGF if ACE_committee is enabled and walker rejected, revert to old std value 
+        if ns_args['ACE_committee']:
+            at.info['committee_std'] = pre_uq_val
         n_accept = 0
     #DOC **else**: (accepted)
     else:  # accept
@@ -1170,10 +1269,15 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         # remember to reverse velocities on acceptance to preserve detailed
         # balance, since velocity is (sometimes) being perturbed, not completely
         # randomized
+        
         if movement_args['MD_atom_velo_flip_accept']:
             # TODO: negative of 0 is 0
             at.set_velocities(-at.get_velocities())  # is there a faster way of doing this in ASE?  Can you do at.velocities?
         at.info['ns_energy'] = final_E
+
+        #VGF If ACE_committee option is enabled then save the new std value
+        if ns_args['ACE_committee']:
+            at.info['committee_std'] = uq_val
         n_accept = 1
 
         #DOC **if** MD\_atom\_velo\_post\_perturb:
@@ -1510,10 +1614,16 @@ def do_cell_step(at, Emax, p_accept, transform):
     orig_pos = at.get_positions()
     if ns_args['n_extra_data'] > 0:
         extra_data = at.arrays['ns_extra_data'].copy()
+        
+    #VGF If ACE_committee is present and enabled, calculate the energy std value before walking
+    if ns_args['ACE_committee']:
+        try:
+            pre_uq_val = at.info['committee_std']
+        except:
+            pre_uq_val = at.calc.get_property('co_ene_std', at)/len(at)
 
     # set new positions and velocities
     at.set_cell(new_cell, scale_atoms=True)
-    
     #VGF calculate nn_distances and reject if enabled, otherwise skip calculation and dont reject based on nn distance
     if ns_args['calc_nn_dis']:
         distances = ase.geometry.get_distances(at.get_positions(), pbc=True, cell=at.get_cell())
@@ -1525,7 +1635,6 @@ def do_cell_step(at, Emax, p_accept, transform):
     else:
         accept_len = True
     #VGF end
-    
     if Emax is None:
         return
 
@@ -1539,11 +1648,28 @@ def do_cell_step(at, Emax, p_accept, transform):
             new_energy = 2.0*abs(Emax)
         #print("error in eval_energy setting new_energy = 2*abs(Emax)=" , new_energy)
 
+        #VGF If ACE_committee is enabled, calculate the energy std, or just set to accept if not enabled
+        if ns_args['ACE_committee']:
+            uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+            uq_accept = uq_val < ns_args['min_std']
+        else:
+            uq_accept = True
+            
         # accept or reject
-        if new_energy < Emax: # accept
+        if (new_energy < Emax) and uq_accept: # accept
             at.info['ns_energy'] = new_energy
+            #VGF save std value to config
+            if ns_args['ACE_committee']:
+                at.info['committee_std'] = uq_val
             return True
         else: # reject and revert
+            #VGF If rejected just because of high std, option for the user to save the config
+            if (new_energy < Emax) and ns_args['save_high_std'] and not uq_accept:
+                at.info['committee_std'] = uq_val
+                ase.io.write(f"{ns_args['out_file_prefix']}hole.{rank}.{ns_args['config_file_format']}", at, append=True, parallel=False, format=ns_args['config_file_format'])
+            #VGF If ACE_committee enabled, and walker rejected, set the recorded std value back to previous value
+            if ns_args['ACE_committee']:
+                at.info['committee_std'] = pre_uq_val
             at.set_cell(orig_cell,scale_atoms=False)
             at.set_positions(orig_pos)
             if ns_args['n_extra_data'] > 0:
@@ -2431,11 +2557,21 @@ def save_snapshot(snapshot_id, rank, size, outfile, comm=None):
 
 def clean_prev_snapshot(iter, rank):
     if iter is not None and ns_args['snapshot_clean']:
-        snapshot_file=ns_args['out_file_prefix']+'snapshot.%d.%d.%s' % (iter, rank, ns_args['config_file_format'])
-        try:
-            os.remove(snapshot_file)
-        except:
-            print( print_prefix, ": WARNING: Failed to delete '%s'" % snapshot_file)
+        if comm is not None:
+            #Add barrier to make sure all threads have written their snapshots before deleting
+            comm.barrier()
+            if rank != 0:
+                return
+        snap_files = glob.glob(f"{ns_args['out_file_prefix']}snapshot.*")
+        for path in snap_files:
+            fname = os.path.basename(path)
+            group = re.match(f"{ns_args['out_file_prefix'][:-1]}\.snapshot\.([0-9]+)\..*", fname)
+            it_num = int(group.group(1))
+            if it_num < iter:
+                os.remove(path)
+            else:
+                continue
+    return
 
 def create_symmetry_checker(size_replica):
     
@@ -2550,8 +2686,8 @@ def do_ns_loop(
         converge_down_to_beta = 1.0/(ns_args['kB']*ns_args['converge_down_to_T'])
         log_Z_term_max = np.NINF
 
-    prev_snapshot_iter = None
-    pprev_snapshot_iter = None
+    #prev_snapshot_iter = None
+    #pprev_snapshot_iter = None
     last_snapshot_time = time.time()
 
     # for estimating current temperature from d log Omega / d E
@@ -2649,6 +2785,40 @@ def do_ns_loop(
                     break
                     
 
+        if ns_args['committee_std_stopping_criteria'] and (i_ns_step % 500 == 0):
+            com_stds = []
+            for at in walkers:
+                try:
+                    co_std = at.info['committee_std']
+                    com_stds.append(co_std)
+                except:
+                    co_std = at.calc.get_property('co_ene_std', at)/len(at)
+                    at.info['committee_std'] = co_std
+                    com_stds.append(co_std)
+
+            across_boundary = sum(np.array(com_stds) > ns_args['committee_std_barrier'])
+            if comm is not None:
+                total_across_boundary = np.empty((1),dtype=int)
+                comm.Allreduce(across_boundary, total_across_boundary, op=MPI.SUM)
+
+                fraction_across = total_across_boundary[0]/ns_args['n_walkers']
+                if fraction_across >= ns_args['committee_std_frac']:
+                    if rank == 0:
+                        print(f"Leaving loop because {total_across_boundary[0]} of {ns_args['n_walkers']} walkers, {fraction_across}, are across the committee_std_barrier")
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
+                else:
+                    if rank == 0:
+                        print(f"Current fraction above committee_std_barrier: {total_across_boundary[0]} of {ns_args['n_walkers']}, {fraction_across}")
+            else:
+                fraction_across = across_boundary/ns_args['n_walkers']
+                if fraction_across >= ns_args['committee_std_frac']:
+                    print(f"Leaving loop because {across_boundary} of {ns_args['n_walkers']} walkers, {fraction_across}, are across the committee_std_barrier")
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
+                else:
+                    print(f"Current fraction above committee_std_barrier: {across_boundary} of {ns_args['n_walkers']}, {fraction_across}")
+
         if ns_args['T_estimate_finite_diff_lag'] > 0:
             Emax_history.append(Emax_of_step)
         if output_this_iter:
@@ -2698,7 +2868,7 @@ def do_ns_loop(
                     walker_copy.info['volume'] = walker_copy.get_volume()
                     walker_copy.info['ns_P'] = movement_args['MC_cell_P']
                     walker_copy.info['iter'] = i_ns_step
-                    walker_copy.info['config_type']  = "config_{}".format(i_ns_step) #VF ADDED for ACEFIT test-train
+                    walker_copy.info['config_type']  = ns_args['out_file_prefix'][:-1] #VGF ADDED for ACEFIT test-train info
                     walker_copy.info['config_n_global'] = global_n
                     if walker_copy.has('masses') and walker_copy.has('momenta'):
                         walker_copy.info['ns_KE'] = walker_copy.get_kinetic_energy()
@@ -3199,9 +3369,9 @@ def do_ns_loop(
         if do_snapshot:
             save_snapshot(i_ns_step, rank, size, outfile, comm)
             last_snapshot_time = time.time()
-            clean_prev_snapshot(pprev_snapshot_iter, rank)
-            pprev_snapshot_iter = prev_snapshot_iter
-            prev_snapshot_iter = i_ns_step
+            clean_prev_snapshot(i_ns_step)
+            #pprev_snapshot_iter = prev_snapshot_iter
+            #prev_snapshot_iter = i_ns_step
 
         if ns_analyzers is not None:
             for (ns_analyzer, ns_analyzer_interval) in ns_analyzers:
@@ -3606,6 +3776,7 @@ def main():
         global E_dump_io
         global print_prefix
         global Z_list
+        global upper_bound_z, lower_bound_z
 
         import sys
         
@@ -3791,12 +3962,46 @@ def main():
         ns_args['random_energy_perturbation'] = float(args.pop('random_energy_perturbation', 1.0e-12))
         ns_args['n_extra_data'] = int(args.pop('n_extra_data', 0))
         ns_args['Z_cell_axis'] = float(args.pop('Z_cell_axis', 10.0))
-        #VGF nn parameters
+        #VGF parameters
+        #Minimum nearest neighbour key words
         ns_args['min_nn_dis'] = float(args.pop('min_nn_dis', 0.0))
         ns_args['calc_nn_dis_init'] = ns_args['min_nn_dis'] > 0.0
-        
         ns_args['calc_nn_dis'] = str_to_logical(args.pop('calc_nn_dis', 'F'))
-        #VGF end nn parameters
+        
+        #energy_calculator ASE_JUL will have to be used for these args to be necessary
+        ns_args['ACE_json_path'] = args.pop('ACE_json_path', None)
+        ns_args['ACE_env_path'] = args.pop('ACE_env_path', '.')
+        #A committee will need to be present within the potential .json file for these args to be necessary
+        ns_args['ACE_committee'] = str_to_logical(args.pop('ACE_committee', 'F'))
+        ns_args['min_std'] = float(args.pop('min_std', np.inf))
+        ns_args['save_high_std'] = str_to_logical(args.pop('save_high_std', 'F'))
+
+        ns_args['committee_std_stopping_criteria'] = str_to_logical(args.pop('committee_std_stopping_criteria', 'F'))
+        ns_args['committee_std_barrier'] = float(args.pop('committee_std_barrier',np.inf))
+        ns_args['committee_std_frac'] = float(args.pop('committee_std_frac',1.0))
+        #Can't use related options with no committee
+        if not ns_args['ACE_committee']:
+            ns_args['min_std'] = np.inf
+            ns_args['committee_std_stopping_criteria'] = False
+        #Can't let user save the uncertain configs with an infinite barrier present, all configs ever generated would be saved!
+        if ns_args['min_std'] == np.inf:
+            ns_args['save_high_std'] = False
+        #If barrier for stopping is infinity, or higher than allowed std, then no point in checking
+        if (ns_args['committee_std_barrier'] == np.inf) or (ns_args['min_std'] < ns_args['committee_std_barrier']):
+            ns_args['committee_std_stopping_criteria'] = False
+        #End VGF parameters
+        
+        #BRIGHT ASE Z wall parameters
+        ns_args['MD_wall_Z'] = str_to_logical(args.pop('MD_wall_Z', 'F'))
+        ns_args['exclude_z'] = str(args.pop('exclude_z', 'exterior'))
+        ns_args['boundary_z1'] = float(args.pop('boundary_z1',np.inf))
+        ns_args['boundary_z2'] = float(args.pop('boundary_z2',0))
+        upper_bound_z = ns_args['boundary_z1']
+        lower_bound_z = ns_args['boundary_z2']
+        if ns_args['boundary_z2'] > ns_args['boundary_z1']:
+            upper_bound_z = ns_args['boundary_z2']
+            lower_bound_z = ns_args['boundary_z1']
+        #BRIGHT END
 
         # surely there's a cleaner way of doing this?
         try:
@@ -3824,6 +4029,7 @@ def main():
         # parse energy_calculator
         ns_args['energy_calculator'] = args.pop('energy_calculator', 'fortran')
         do_calc_ASE = False
+        with_julia = False
         do_calc_lammps = False
         do_calc_internal = False
         do_calc_fortran = False
@@ -3834,6 +4040,39 @@ def main():
                 exit_error("need ASE calculator module name ASE_calc_module\n",1)
 
             do_calc_ASE=True
+        #VGF Setup for the ASE_JUL calculator
+        elif ns_args['energy_calculator'] == 'ASE_JUL':
+            
+            if ns_args['ACE_json_path'] is None:
+                exit_error("Require ACE_json_path, the path to your ace potential in .json format, in order to use the ASE Julia calculator", 142)
+            print('ASE_JUL 1/4: Attmpting to import Julia')
+            try:
+                from julia.api import Julia
+                jl = Julia(compiled_modules=False)
+                from julia import Pkg
+                print('ASE_JUL 1/4: Successfully imported Julia')
+            except:
+                exit_error('ASE_JUL 1/4: Failure while importing Julia, please make sure PyJulia is installed', 142)
+
+            if ns_args['ACE_env_path'] == '.':
+                print("Warning: This probably isn't the correct path to your environment but standby...")
+            print(f"ASE_JUL 2/4: Attempting to activate Julia environment at {ns_args['ACE_env_path']}")
+            try:
+                Pkg.activate(ns_args['ACE_env_path'])
+                print("ASE_JUL 2/4: Successfully activated Julia environment")
+            except:
+                exit_error("ASE_JUL 2/4: Failure to activate Julia environment, please make sure you have setup a Julia environment with the required modules, and provided the correct path", 142)
+
+            print("ASE_JUL 3/4: Attempting to import pyjulip")
+            try:
+                import pyjulip
+            except:
+                exit_error("ASE_JUL 3/4: Failure to import pyjulip, please make sure the module is correctly installed", 142)
+
+            print("ASE_JUL 3/4: Successfully imported pyjulip")
+            do_calc_ASE=True
+            with_julia=True
+
         elif ns_args['energy_calculator'] == 'lammps':
             try:
                 from lammpslib import LAMMPSlib
@@ -4163,7 +4402,18 @@ def main():
 
         # initialise potential
         if do_calc_ASE:
-            pot = importlib.import_module(ns_args['ASE_calc_module']).calc
+            if not with_julia:
+                pot = importlib.import_module(ns_args['ASE_calc_module']).calc
+
+            #VGF Create the Julia ACE calculator
+            elif with_julia:
+                print("ASE_JUL 4/4: Creating Julia ACE calculator")
+                try:
+                    pot = pyjulip.ACE1(ns_args['ACE_json_path'])
+                except:
+                    exit_error("ASE_JUL 4/4: Failure to create Julia ACE calculator, likely a problem with pyjulip or your julia environment", 142)
+                print("ASE_JUL 4/4: Successfully created Julia ACE calculator. Setup Complete!")
+                
         elif do_calc_internal or do_calc_fortran:
             pass
         elif do_calc_lammps:
@@ -4412,9 +4662,10 @@ def main():
                     # random initial positions
                     energy = float('nan')
                     n_try = 0
-                    #VGF added optional nn rejection criteria
+                    #VGF added optional nn and ACE committee energy std rejection criteria
                     reject_len = True
-                    while (n_try < ns_args['random_init_max_n_tries']) and (((math.isnan(energy) or energy > ns_args['start_energy_ceiling'])) or reject_len):
+                    reject_uq = True
+                    while (n_try < ns_args['random_init_max_n_tries']) and (((math.isnan(energy) or energy > ns_args['start_energy_ceiling'])) or reject_len or reject_uq):
                         at.set_scaled_positions( rng.float_uniform(0.0, 1.0, (len(at), 3) ) )
                         if movement_args['2D']:  # zero the Z coordiates in a 2D simulation
                             temp_at=at.get_positions()
@@ -4431,8 +4682,14 @@ def main():
                             reject_len = min_bond < ns_args['min_nn_dis']
                         else:
                             reject_len = False
-                        #VGF end
+
                         energy = eval_energy(at)
+                        #VGF if ACE committee enabled calculate committee energy std, and potentially reject based on min_std value
+                        if ns_args['ACE_committee']:
+                            uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+                            reject_uq = uq_val > ns_args['min_std']
+                        else:
+                            reject_uq = False
                         n_try += 1
 
                     if math.isnan(energy) or energy > ns_args['start_energy_ceiling'] or reject_len:
@@ -4461,14 +4718,19 @@ def main():
                 energy = eval_energy(at)
                 at.info['ns_energy'] = rand_perturb_energy(energy, ns_args['random_energy_perturbation'])
                 at.info['volume'] = at.get_volume()
+
+                #VGF If ACE_committee enabled calculate the final energy std value of the initialised walkers
+                if ns_args['ACE_committee']:
+                    uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+                    at.info['committee_std'] = uq_val
+                    print('init_uq', uq_val)
                 #VGF if nn rejection criteria enabled, print the final smallest nearest neighbour distance
                 if ns_args['calc_nn_dis_init']:
                     distances = ase.geometry.get_distances(at.get_positions())
                     bonds = np.sort(distances[1], axis=None)
                     min_bond = bonds[len(at)]
                     outfile.print('min_bond_final', rank, min_bond)
-                #VGF end
-                
+                #VGF end                
             # Done initialising atomic positions. Now initialise momenta
 
             # set KEmax from P and Vmax
@@ -4539,7 +4801,9 @@ def main():
                     at.info['volume'] = at.get_volume()
 
             if movement_args['do_velocities']:
-                KEmax = walkers[0].info['KEmax']
+                #BRIGHT Assign KEmax if starting the simulation from restart file (i.e. iter=-1)
+                KEmax = 1.5*len(walkers[0])*ns_args['kB']*ns_args['KEmax_max_T']
+                #BRIGHT END
             else:
                 KEmax = -1.0
 
@@ -4684,50 +4948,37 @@ def main():
                 track_traj_io = None
         else:  # restart, so the existing file should be appended
             # concatenate existing traj file to before restart
-            outfile.print(rank, "truncating traj file to start_first_iter",
-                  start_first_iter)
-            mode = "r+"
-            if movement_args['keep_atoms_fixed'] > 0:
-                mode = "a+"
-            with open(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']), mode) as f:
-                prev_pos = None
-                # loop this way with "while True" and "f.readline()" because directly looping over f does not 
-                # set position reported by f.tell() to end of line
-                # make sure there's somplace to truncate to if traj file has only one config and it's already too late
-                prev_pos = 0
-                prev_prev_pos = 0
-                while True:
-                    l = f.readline()
-                    if not l:
+            print(rank, "truncating traj file to start_first_iter", start_first_iter)
+
+            #Open traj file and loop through it backwards (shorter loop length)
+            try:
+                strucs = ase.io.read(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']), index=':', parallel=False)
+                empty_file = False
+            except:
+                empty_file = True
+
+            if not empty_file:
+                last_deleted = None
+                for i in reversed(range(len(strucs))):
+                    cur_iter = strucs[i].info['iter']
+                    if cur_iter >= start_first_iter:
+                        last_deleted = cur_iter
+                        del strucs[i]
+                    else:
+                        print('last deleted:', last_deleted, 'stopped at:', cur_iter)
                         break
-                    m = re.search(r"\biter=(\d+)\b", l)
-                    if m is not None:
-                        cur_iter = int(m.group(1))
-                        if cur_iter >= start_first_iter:
-                            # rewind back to two lines back, before start of this config
-                            f.seek(prev_prev_pos)
-                            f.truncate()
-                            break
-                    prev_prev_pos = prev_pos
-                    prev_pos = f.tell()
+                #write the shortened file to a temporary new file, so if there is an issue the old data isn't destroyed
+                ase.io.write(ns_args['out_file_prefix']+'traj.%d.%s.trunc' % (rank, ns_args['config_file_format']), strucs, parallel=False, format=ns_args['config_file_format'])
+                #Remove original file, now data safely saved
+                os.remove(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']))
+                #Rename new file to old file name
+                os.rename(ns_args['out_file_prefix']+'traj.%d.%s.trunc' % (rank, ns_args['config_file_format']), ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']))
+
             traj_io = open(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']), "a")
             if ns_args['track_configs'] and ns_args['track_configs_write']:
                 track_traj_io = open(ns_args['out_file_prefix']+'track_traj.%d.%s' % (rank, ns_args['config_file_format']), "a")
             else:
                 track_traj_io = None
-
-            # Read the existing traj file and look for the point where we restart from. Truncate the rest.
-            # This part is not used because the ASE.io.read takes soooo long, that it makes a restart impossible.
-            #traj_io = open(ns_args['out_file_prefix']+'traj.%d.%s' % (rank, ns_args['config_file_format']), "r+")
-            #i = 0
-            #while True:
-            #    at=(ase.io.read(traj_io, format=ns_args['config_file_format'],index=i))
-            #   print("ASE.io.read trajectory", rank, i, at.info['iter'])
-            #    if at.info['iter'] >= start_first_iter:
-            #         at=(ase.io.read(traj_io, format=ns_args['config_file_format'],index=i-1))
-            #         traj_io.truncate()
-            #         break
-            #    i += 1
 
         sys.stdout.flush()
         if ns_args['E_dump_interval'] > 0 and rank == 0:

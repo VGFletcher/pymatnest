@@ -146,7 +146,7 @@ if comm_rank == 0:
     n_therm = 4
     if args.entropy:
         n_therm += 1
-    fmt = "{:7g} "+" ".join(["{:11g}"]*n_therm)+" "+" ".join(["{:8d}"]*3)+" "+" ".join(["{:15d}"]*3)+" {:6g}"
+    fmt = "{:7g} "+" ".join(["{:.12f}"]*n_therm)+" "+" ".join(["{:8d}"]*3)+" "+" ".join(["{:15d}"]*3)+" {:6g}"
     header_labels=["T","log_Z(T)","F(T)"]
     if args.entropy:
         header_labels.append("S")
