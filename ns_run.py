@@ -2563,11 +2563,9 @@ def clean_prev_snapshot(iter, rank, comm):
             if rank != 0:
                 return
         snap_files = glob.glob(f"{ns_args['out_file_prefix']}snapshot.*")
-        print(f"{ns_args['out_file_prefix']}snapshot.*")
         for path in snap_files:
             fname = os.path.basename(path)
             group = re.match(f"[\s\S]+\.snapshot\.([0-9]+)\.[\s\S]+", fname)
-            print(group)
             it_num = int(group.group(1))
             if it_num < iter:
                 os.remove(path)
