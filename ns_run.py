@@ -2555,7 +2555,7 @@ def save_snapshot(snapshot_id, rank, size, outfile, comm=None):
     if ns_args['snapshot_per_parallel_task'] or rank == 0:
         snapshot_io.close()
 
-def clean_prev_snapshot(iter, rank):
+def clean_prev_snapshot(iter, rank, comm):
     if iter is not None and ns_args['snapshot_clean']:
         if comm is not None:
             #Add barrier to make sure all threads have written their snapshots before deleting
@@ -2563,9 +2563,11 @@ def clean_prev_snapshot(iter, rank):
             if rank != 0:
                 return
         snap_files = glob.glob(f"{ns_args['out_file_prefix']}snapshot.*")
+        print(f"{ns_args['out_file_prefix']}snapshot.*")
         for path in snap_files:
             fname = os.path.basename(path)
-            group = re.match(f"{ns_args['out_file_prefix'][:-1]}\.snapshot\.([0-9]+)\..*", fname)
+            group = re.match(f"[\s\S]+\.snapshot\.([0-9]+)\.[\s\S]+", fname)
+            print(group)
             it_num = int(group.group(1))
             if it_num < iter:
                 os.remove(path)
@@ -2785,7 +2787,7 @@ def do_ns_loop(
                     break
                     
 
-        if ns_args['committee_std_stopping_criteria'] and (i_ns_step % 500 == 0):
+        if ns_args['committee_std_stopping_criteria'] and i_ns_step%ns_args['check_frequency'] == 0:
             com_stds = []
             for at in walkers:
                 try:
@@ -2797,6 +2799,7 @@ def do_ns_loop(
                     com_stds.append(co_std)
 
             across_boundary = sum(np.array(com_stds) > ns_args['committee_std_barrier'])
+            break_loop_uq = False
             if comm is not None:
                 total_across_boundary = np.empty((1),dtype=int)
                 comm.Allreduce(across_boundary, total_across_boundary, op=MPI.SUM)
@@ -2804,20 +2807,29 @@ def do_ns_loop(
                 fraction_across = total_across_boundary[0]/ns_args['n_walkers']
                 if fraction_across >= ns_args['committee_std_frac']:
                     if rank == 0:
-                        print(f"Leaving loop because {total_across_boundary[0]} of {ns_args['n_walkers']} walkers, {fraction_across}, are across the committee_std_barrier")
-                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
-                    break
+                        outfile.print(f"Leaving loop because {total_across_boundary[0]} of {ns_args['n_walkers']} walkers, {fraction_across}, are across the committee_std_barrier")
+                    if not doing_replica_exchange:
+                        i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                        break
+                    else:
+                        break_loop_uq = True
                 else:
                     if rank == 0:
-                        print(f"Current fraction above committee_std_barrier: {total_across_boundary[0]} of {ns_args['n_walkers']}, {fraction_across}")
+                        outfile.print(f"Current fraction above committee_std_barrier: {total_across_boundary[0]} of {ns_args['n_walkers']}, {fraction_across}")
             else:
                 fraction_across = across_boundary/ns_args['n_walkers']
                 if fraction_across >= ns_args['committee_std_frac']:
-                    print(f"Leaving loop because {across_boundary} of {ns_args['n_walkers']} walkers, {fraction_across}, are across the committee_std_barrier")
+                    outfile.print(f"Leaving loop because {across_boundary} of {ns_args['n_walkers']} walkers, {fraction_across}, are across the committee_std_barrier")
                     i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
                     break
                 else:
-                    print(f"Current fraction above committee_std_barrier: {across_boundary} of {ns_args['n_walkers']}, {fraction_across}")
+                    outfile.print(f"Current fraction above committee_std_barrier: {across_boundary} of {ns_args['n_walkers']}, {fraction_across}")
+
+            if doing_replica_exchange:
+                replica_answers = comm_global.allgather(break_loop_uq)
+                if all(replica_answers):
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
 
         if ns_args['T_estimate_finite_diff_lag'] > 0:
             Emax_history.append(Emax_of_step)
@@ -2868,7 +2880,7 @@ def do_ns_loop(
                     walker_copy.info['volume'] = walker_copy.get_volume()
                     walker_copy.info['ns_P'] = movement_args['MC_cell_P']
                     walker_copy.info['iter'] = i_ns_step
-                    walker_copy.info['config_type']  = ns_args['out_file_prefix'][:-1] #VGF ADDED for ACEFIT test-train info
+                    walker_copy.info['config_type']  = os.path.basename(ns_args['out_file_prefix'][:-1]) #VGF ADDED for ACEFIT test-train info
                     walker_copy.info['config_n_global'] = global_n
                     if walker_copy.has('masses') and walker_copy.has('momenta'):
                         walker_copy.info['ns_KE'] = walker_copy.get_kinetic_energy()
@@ -3369,7 +3381,7 @@ def do_ns_loop(
         if do_snapshot:
             save_snapshot(i_ns_step, rank, size, outfile, comm)
             last_snapshot_time = time.time()
-            clean_prev_snapshot(i_ns_step)
+            clean_prev_snapshot(i_ns_step, rank, comm)
             #pprev_snapshot_iter = prev_snapshot_iter
             #prev_snapshot_iter = i_ns_step
 
@@ -4723,7 +4735,7 @@ def main():
                 if ns_args['ACE_committee']:
                     uq_val = at.calc.get_property('co_ene_std', at)/len(at)
                     at.info['committee_std'] = uq_val
-                    print('init_uq', uq_val)
+                    outfile.print('init_uq', uq_val)
                 #VGF if nn rejection criteria enabled, print the final smallest nearest neighbour distance
                 if ns_args['calc_nn_dis_init']:
                     distances = ase.geometry.get_distances(at.get_positions())
