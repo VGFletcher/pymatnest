@@ -71,6 +71,10 @@ def usage():
     ``converge_down_to_T=flot``
        | MANDATORY
        | temperature down to which Z(T) should be converged.  Either this or ``n_iter_times_fraction_killed`` is required.
+    
+    ``check_frequency=int``
+       | After check_frequency iterations the stopping criteria is checked.
+       | Default: 1000
 
     ``T_estimate_finite_diff_lag=int``
        | default: 1000
@@ -522,6 +526,7 @@ def usage():
     sys.stderr.write("n_extra_walk_per_task=int (0)\n")
     sys.stderr.write("n_iter_times_fraction_killed=int (MANDATORY, this or converge_down_to_T required)\n")
     sys.stderr.write("converge_down_to_T=float (MANDATORY, this or n_iter_times_fraction_killed required)\n")
+    sys.stderr.write("check_frequency=int, (1000, check stopping criteria after check_frequency iterations)\n")
     sys.stderr.write("T_estimate_finite_diff_lag=int (1000, lag for doing finite difference in current T estimate\n")
     sys.stderr.write("min_Emax=float (None.  Termination condition based on Emax)\n")
     sys.stderr.write("out_file_prefix=str (None)\n")
@@ -2595,12 +2600,22 @@ def do_ns_loop(
             outfile.print("WARNING: Emax not decreasing ", Emax_of_step, Emax_next)
         Emax_of_step = Emax_next
 
-        if ns_args['min_Emax'] is not None and Emax_of_step < ns_args['min_Emax']:
-            if rank == 0:
-                # if the termination was set by a minimum energy, and it is reached, stop.
-                outfile.print("Leaving loop because Emax=", Emax_of_step, " < min_Emax =", ns_args['min_Emax'])
-            i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
-            break
+        if ns_args['min_Emax'] is not None and i_ns_step%ns_args['check_frequency'] == 0:
+            break_loop = False
+            if Emax_of_step < ns_args['min_Emax']:
+                if not doing_replica_exchange:
+                    if rank == 0:
+                        # if the termination was set by a minimum energy, and it is reached, stop.
+                        outfile.print("Leaving loop because Emax=", Emax_of_step, " < min_Emax =", ns_args['min_Emax'])
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
+                else:
+                    break_loop = True
+            if doing_replica_exchange:
+                replica_answers = comm_global.allgather(break_loop)
+                if all(replica_answers):
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
 
         if rank == 0:
             cur_time = time.time()
@@ -2608,7 +2623,7 @@ def do_ns_loop(
         else:
             output_this_iter = False
 
-        if ns_args['converge_down_to_T'] > 0:
+        if ns_args['converge_down_to_T'] > 0 and i_ns_step%ns_args['check_frequency'] == 0:
             # see ns_analyse.py calc_log_a() for math
             log_a = log_X_n_term_sum*i_ns_step + log_X_n_term_cumsum_modified
             # DEBUG if rank == 0:
@@ -2618,11 +2633,21 @@ def do_ns_loop(
             log_Z_term_last = log_a[-1]-converge_down_to_beta*Emax[-1]
             if output_this_iter:
                 outfile.print("log_Z_term max ", log_Z_term_max, "last ", log_Z_term_last, "diff ", log_Z_term_max-log_Z_term_last)
+            break_loop_temp = False
             if log_Z_term_last < log_Z_term_max - 10.0:
-                if rank == 0:
-                    outfile.print(print_prefix, "Leaving loop because Z(%f) is converged" % ns_args['converge_down_to_T'])
-                i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
-                break
+                if not doing_replica_exchange:
+                    if rank == 0:
+                        outfile.print(print_prefix, "Leaving loop because Z(%f) is converged" % ns_args['converge_down_to_T'])
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
+                else:
+                    break_loop_temp = True
+            if doing_replica_exchange:
+                replica_answers = comm_global.allgather(break_loop_temp)
+                if all(replica_answers):
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
+                    
 
         if ns_args['T_estimate_finite_diff_lag'] > 0:
             Emax_history.append(Emax_of_step)
@@ -3280,8 +3305,8 @@ def do_ns_loop(
                 status = MPI.Status()
                 # swap_idx = np.random.randint(0, walkers_per_task)
                 # swap_idx_phase1 = 0
-                swap_idx_phase1 = rng.int_uniform(0, size_replica)
-
+                swap_idx_phase1 = rng.int_uniform(0, len(walkers))
+                
                 n_send = re_utils.get_buffer_size(
                     n_atoms,
                     do_velocities,
@@ -3336,6 +3361,9 @@ def do_ns_loop(
                         ) 
                         if acc:
                             walker_rcv.info["ns_energy"] = h0
+                            #Without a deepcopy, the calculator object is lost, deepcopy not worth it
+                            if do_calc_ASE or do_calc_lammps:
+                                walker_rcv.calc = pot
                             walkers[swap_idx_phase1] = walker_rcv
 
                 if replica_idx % 2 != 0:
@@ -3367,6 +3395,9 @@ def do_ns_loop(
                     ) 
                     if acc:
                         walker_rcv.info["ns_energy"] = h1
+                        #Without a deepcopy, the calculator object is lost, deepcopy not worth it
+                        if do_calc_ASE or do_calc_lammps:
+                            walker_rcv.calc = pot
                         walkers[swap_idx_phase1] = walker_rcv
                     
                     # set acc to zero again, such that only the acc from the 
@@ -3405,7 +3436,7 @@ def do_ns_loop(
                     rcv_buf = np.zeros(n_send)
                     # swap_idx = np.random.randint(0, walkers_per_task)
                     # swap_idx_phase2 = 0
-                    swap_idx_phase2 = rng.int_uniform(0, size_replica)
+                    swap_idx_phase2 = rng.int_uniform(0, len(walkers))
                     walker_snd = walkers[swap_idx_phase2]
                     snd_buf = re_utils.construct_snd_buf(
                         walker_snd,
@@ -3449,6 +3480,9 @@ def do_ns_loop(
                             ) 
                             if acc:
                                 walker_rcv.info["ns_energy"] = h0
+                                #Without a deepcopy, the calculator object is lost, deepcopy not worth it
+                                if do_calc_ASE or do_calc_lammps:
+                                    walker_rcv.calc = pot
                                 walkers[swap_idx_phase2] = walker_rcv
 
                     if replica_idx % 2 == 0:
@@ -3480,6 +3514,9 @@ def do_ns_loop(
                             ) 
                             if acc:
                                 walker_rcv.info["ns_energy"] = h1
+                                #Without a deepcopy, the calculator object is lost, deepcopy not worth it
+                                if do_calc_ASE or do_calc_lammps:
+                                    walker_rcv.calc = pot
                                 walkers[swap_idx_phase2] = walker_rcv
 
                             acc = 0
@@ -3559,7 +3596,7 @@ def main():
         global max_n_cull_per_task
         # global size, rank, comm
         global rng, np, sys, ns_analyzers
-        global n_cull, n_walkers, n_walkers_per_task
+        global n_cull, n_walkers, n_walkers_per_task, doing_replica_exchange
         global n_extra_walk_per_task
         global do_calc_ASE, do_calc_lammps, do_calc_internal, do_calc_fortran
         global energy_io, traj_io, walkers
@@ -3648,7 +3685,9 @@ def main():
             float(i) for i in args.pop("RE_pressures", "0.0").split()
         ]
         num_replicas = len(ns_args["RE_pressures"])
+        doing_replica_exchange = False
         if num_replicas > 1:
+            doing_replica_exchange = True
             if rank == 0:
                 print("Starting a replica-exchange nested sampling (RENS) run")
 
@@ -3705,6 +3744,7 @@ def main():
         else:
             ns_args['n_iter'] = -1
         ns_args['converge_down_to_T'] = float(args.pop('converge_down_to_T', -1))
+        ns_args['check_frequency'] = int(args.pop('check_frequency', 1000))
         if ns_args['n_iter'] <= 0 and ns_args['converge_down_to_T'] <= 0:
             exit_error("need either n_iter_times_fraction_killed or converge_down_to_T", 1)
 
@@ -4065,8 +4105,12 @@ def main():
             outfile_dir = f"output_data_{replica_idx}/"
             ns_args['out_file_prefix'] = outfile_dir + ns_args['out_file_prefix']
             if rank == 0:
-                os.mkdir(outfile_dir)
-        
+                try:
+                    os.mkdir(outfile_dir)
+                except:
+                    outfile.print(f"Detected Directory {outfile_dir}")
+                    pass
+                    
         ns_args['RE_n_swap_cycles'] = int(args.pop('RE_n_swap_cycles', 10))
         ns_args['RE_swap_interval'] = int(args.pop('RE_swap_interval', 5))
 
