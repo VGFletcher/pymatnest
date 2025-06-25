@@ -3476,6 +3476,10 @@ def main():
         #energy_calculator ASE_JUL will have to be used for these args to be necessary
         ns_args['ACE_json_path'] = args.pop('ACE_json_path', None)
         ns_args['ACE_env_path'] = args.pop('ACE_env_path', '.')
+
+        ns_args['MACE_model_path'] = args.pop('MACE_model_path', None)
+        ns_args['MACE_device'] = args.pop('MACE_device', 'cuda')
+        
         #A committee will need to be present within the potential .json file for these args to be necessary
         ns_args['ACE_committee'] = str_to_logical(args.pop('ACE_committee', 'F'))
         ns_args['min_std'] = float(args.pop('min_std', np.inf))
@@ -3577,6 +3581,11 @@ def main():
             print("ASE_JUL 3/4: Successfully imported pyjulip")
             do_calc_ASE=True
             with_julia=True
+
+        elif ns_args['energy_calculator'] == 'MACE':
+            from mace.calculators import MACECalculator
+            do_calc_ASE=True
+            with_MACE=True
 
         elif ns_args['energy_calculator'] == 'lammps':
             try:
@@ -3871,17 +3880,20 @@ def main():
 
         # initialise potential
         if do_calc_ASE:
-            if not with_julia:
-                pot = importlib.import_module(ns_args['ASE_calc_module']).calc
-
             #VGF Create the Julia ACE calculator
-            elif with_julia:
+            if with_julia:
                 print("ASE_JUL 4/4: Creating Julia ACE calculator")
                 try:
                     pot = pyjulip.ACE1(ns_args['ACE_json_path'])
                 except:
                     exit_error("ASE_JUL 4/4: Failure to create Julia ACE calculator, likely a problem with pyjulip or your julia environment", 142)
                 print("ASE_JUL 4/4: Successfully created Julia ACE calculator. Setup Complete!")
+            elif with_MACE:
+                print("MACE POTENTIAL INITIALIZING")
+                pot = MACECalculator(model_path=ns_args['MACE_model_path'], device=ns_args['MACE_device'])
+                print("MACE IMPORTED AND NOW RUNNING NS")
+            else:
+                pot = importlib.import_module(ns_args['ASE_calc_module']).calc
                 
         elif do_calc_internal or do_calc_fortran:
             pass
