@@ -4097,7 +4097,6 @@ def main():
 
         ######################################################################
         # New arguments for RENS implementation (NU)
-        #if str_to_logical(args.pop('make_output_dir', "F")):
         if doing_replica_exchange:
             outfile_dir = f"output_data_{replica_idx}/"
             ns_args['out_file_prefix'] = outfile_dir + ns_args['out_file_prefix']
