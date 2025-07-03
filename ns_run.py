@@ -82,7 +82,7 @@ def usage():
        | String used as prefix for the different output files.
        | No default.
 
-    ``energy_calculator= ( ASE | lammps | internal | fortran | ASE_JUL)``
+    ``energy_calculator= ( ASE | lammps | internal | fortran | ASE_JUL | MACE )``
        | Energy calculator.
        | default: fortran
 
@@ -496,20 +496,36 @@ def usage():
      | When the ASE_JUL calculator is used, this is the path to the Julia project that must be setup prior to using this calculator
      | default: .
 
-    ``ACE_committee=[ T | F ]``
-     | If the ACE potential has a committee of potentials present, you can declare this as true and the committee STD per atom associated with every configuration produced will be calculated
+    ``MACE_model_path=string``
+     | When MACE calculator is used, this the path to the model
+     | default: None
+
+    ``MACE_device=string``
+     | When using the MACE calculator, you can use a GPU with option 'cuda', but it seems to be slower for NS.
+     | default: cpu
+
+    ``MACE_dtype=string``
+     | When using the MACE calculator, you can set the dtype to float32 or float64 balancing accuracy and speed.
+     | default: float32
+
+    ``MACE_comm_regex=string``
+     | This is the regex to match the committee of models which can then be used in sampling. This is separate from MACE_model_path to reduce computational expense. The committee is not evaluated for every step during sampling, only before accepting or rejecting a move.
+     | default: None
+
+    ``committee=[ T | F ]``
+     | If the ACE or MACE potential has a committee of potentials present, you can declare this as true and the committee STD associated with every configuration produced will be calculated
      | default: False
 
     ``min_std=float``
-     | If the ACE potential has a committee, and you have set ACE_committee to True, you can choose to reject configurations if the committees predictions have a standard deviation per atom greater than this value in eV/atom
+     | If the ACE or MACE potential has a committee, and you have set committee to True, you can choose to reject configurations if the committees predictions have a standard deviation per atom greater than this value in eV/atom
      | default: np.inf
 
      ``save_high_std=[ T | F ]``
-     | If the ACE potential has a committee, and you have set ACE_committee to True, and you have set a min_std value less than np.inf, you can choose to save configurations that are rejected only because the committee predictions have a standard deviation per atom greater than min_std.
+     | If the ACE or MACE potential has a committee, and you have set committee to True, and you have set a min_std value less than np.inf, you can choose to save configurations that are rejected only because the committee predictions have a standard deviation per atom greater than min_std.
      | default: False
     
      ``committee_std_stopping_criteria=[ T | F ]``
-     | If the ACE potential has a committee, and you have set ACE_committee to True, you can choose to stop a nested sampling calculation when a fraction of the walkers (committee_std_frac) have a committee STD per atom greater than committee_std_barrier. Other stopping criteria can be enabled simultaneously.
+     | If the ACE or MACE potential has a committee, and you have set committee to True, you can choose to stop a nested sampling calculation when a fraction of the walkers (committee_std_frac) have a committee STD per atom greater than committee_std_barrier. Other stopping criteria can be enabled simultaneously.
      | default: False
 
      ``committee_std_barrier=float``
@@ -677,8 +693,12 @@ def usage():
     sys.stderr.write("min_nn_dis=float, (0.0, reject initial walkers with a nearest neighbour distance less than this value in Angstroms)\n")
     sys.stderr.write("calc_nn_dis=[ T | F ], (F, reject walkers with a nearest neighbour distance less than min_nn_dis throughout the entire sampling procedure)\n")
     sys.stderr.write("ACE_json_path=string, (None, path to the .json file containing the ACE potential to be used with ACE_JUL calculator)\n")
-    sys.stderr.write("ACE_env_path=string, ('.', path to the julia project, which has the required modules to use the ACE calculator\n")
-    sys.stderr.write("ACE_committee=[ T | F ], (F, Declare if the potential has a committee present to calculate the committees standard deviation of energy predictions made on any configuration)\n")
+    sys.stderr.write("ACE_env_path=string, ('.', path to the julia project, which has the required modules to use the ACE calculator)\n")
+    sys.stderr.write("MACE_model_path=string, (None, Path to MACE model)\n")
+    sys.stderr.write("MACE_device=string, (cpu, Evaluate the MACE model by cpu or gpu=cuda)\n")
+    sys.stderr.write("MACE_dtype=string, (float32, Data type of MACE model, either float32 or float64)\n")
+    sys.stderr.write("MACE_comm_regex=string, (None, If using MACE committee, this is the path to match the models)\n")
+    sys.stderr.write("committee=[ T | F ], (F, Declare if the potential has a committee present to calculate the committees standard deviation of energy predictions made on any configuration)\n")
     sys.stderr.write("min_std=float, (np.inf, choose to reject walked clones if the committees standard deviation of energy predictions is above this value)\n")
     sys.stderr.write("save_high_std=[ T | F ], (F, Choose to save configurations that were rejected only because of the min_std value, cannot be True if min_std=np.inf)\n")
     sys.stderr.write("committee_std_stopping_criteria=[ T | F ], (F, Choose to enable a stopping criteria based on the fraction of walkers above a committee std barrier)\n")
@@ -1244,7 +1264,7 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
             at.set_velocities(-at.get_velocities())  # is there a faster way of doing this in ASE?  Can you do at.velocities?
         at.info['ns_energy'] = final_E
 
-        #VGF If ACE_committee option is enabled then save the new std value
+        #VGF If committee option is enabled then save the new std value
         if ns_args['committee']:
             at.info['committee_std'] = uq_val
         n_accept = 1
@@ -1625,7 +1645,7 @@ def do_cell_step(at, Emax, p_accept, transform):
     if ns_args['n_extra_data'] > 0:
         extra_data = at.arrays['ns_extra_data'].copy()
         
-    #VGF If ACE_committee is present and enabled, calculate the energy std value before walking
+    #VGF If committee is present and enabled, calculate the energy std value before walking
     if ns_args['committee']:
         try:
             pre_uq_val = at.info['committee_std']
@@ -3562,9 +3582,6 @@ def main():
             ns_args['MACE_committee'] = False
             if ns_args['MACE_comm_regex'] is not None:
                 ns_args['MACE_committee'] = True
-                #Convert to var as, MACE calc uses var
-#                ns_args['min_std'] = ns_args['min_std']**2
-#                ns_args['committee_std_barrier'] = ns_args['committee_std_barrier']**2
             elif ns_args['ACE_json_path'] is not None:
                 ns_args['ACE_committee'] = True
             else:
@@ -4192,11 +4209,6 @@ def main():
                 #convert from per atom
                 ns_args['min_std'] = ns_args['min_std']*n_atoms
                 ns_args['committee_std_barrier'] = ns_args['committee_std_barrier']*n_atoms
-
-#                if ns_args['MACE_committee']:
-                    #Convert to variance for the MACE calculator
-#                    ns_args['min_std'] = ns_args['min_std']**2
-#                    ns_args['committee_std_barrier'] = ns_args['committee_std_barrier']**2
 
             # V should have prob distrib p(V) = V^N.
             # Using transformation rule p(y) = p(x) |dx/dy|, with p(y) = y^N and p(x) = 1,
