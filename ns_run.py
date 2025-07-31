@@ -1362,8 +1362,17 @@ def do_MC_atom_walk(at, movement_args, Emax, KEmax):
                 uq_accept = uq_val < ns_args['min_std']
             else:
                 uq_accept = True
+
+            if ns_args['calc_nn_dis']:
+                distances = ase.geometry.get_distances(at.get_positions(), pbc=True, cell=at.get_cell())
+                bonds = np.sort(distances[1], axis=None)
+                min_bond = bonds[n_atoms]
+
+                accept_len = min_bond > ns_args['min_nn_dis']
+            else:
+                accept_len = True
                 
-            if energy1 < Emax and uq_accept:
+            if energy1 < Emax and uq_accept and accept_len:
                 at.info['ns_energy'] = energy1
                 if ns_args['committee']:
                     at.info['committee_std'] = uq_val
@@ -1450,8 +1459,17 @@ def do_MC_atom_walk(at, movement_args, Emax, KEmax):
                     uq_accept = uq_val < ns_args['min_std']
                 else:
                     uq_accept = True
+
+                if ns_args['calc_nn_dis']:
+                    distances = ase.geometry.get_distances(at.get_positions(), pbc=True, cell=at.get_cell())
+                    bonds = np.sort(distances[1], axis=None)
+                    min_bond = bonds[n_atoms]
+
+                    accept_len = min_bond > ns_args['min_nn_dis']
+                else:
+                    accept_len = True
                     
-                if E < Emax and uq_accept: # accept
+                if E < Emax and uq_accept and accept_len: # accept
                     # save new E, pos, direction
                     at.info['ns_energy'] = E
                     if ns_args['committee']:
@@ -1517,7 +1535,6 @@ def do_MC_atom_walk(at, movement_args, Emax, KEmax):
     if n_accept_velo is not None:
         out['MC_atom_velo'] = (n_try, n_accept_velo)
     out['MC_atom'] = (n_try, n_accept)
-    
     return out
 
 def propose_volume_step(at, step_size, flat_V_prior):
@@ -3577,11 +3594,13 @@ def main():
         if (ns_args['committee_std_barrier'] == np.inf) or (ns_args['min_std'] < ns_args['committee_std_barrier']):
             ns_args['committee_std_stopping_criteria'] = False
         #Determine if MACE or ACE committee
+        ns_args['ACE_committee'] = False
+        ns_args['MACE_committee'] = False
         if ns_args['committee']:
-            ns_args['ACE_committee'] = False
-            ns_args['MACE_committee'] = False
             if ns_args['MACE_comm_regex'] is not None:
                 ns_args['MACE_committee'] = True
+                from mace.calculators import MACECalculator
+                comm_calc = MACECalculator(model_paths=ns_args['MACE_comm_regex'], device=ns_args['MACE_device'], default_dtype=ns_args['MACE_dtype'])
             elif ns_args['ACE_json_path'] is not None:
                 ns_args['ACE_committee'] = True
             else:
@@ -4348,6 +4367,13 @@ def main():
                 if rank == r:
                     walkers = at_list[r*n_walkers:(r+1)*n_walkers]  # TODO: RBW – split walkers on different processes? maybe we need to set things up (energies?) before splitting?
                     #print(rank, r, walkers)
+
+            n_atoms = len(walkers[0])
+            if ns_args['committee']:
+                #convert from per atom
+                ns_args['min_std'] = ns_args['min_std']*n_atoms
+                ns_args['committee_std_barrier'] = ns_args['committee_std_barrier']*n_atoms
+
             for at in walkers:
                 if np.any(at.get_atomic_numbers()
                           != walkers[0].get_atomic_numbers()):
