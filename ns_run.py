@@ -88,7 +88,7 @@ def usage():
        | String used as prefix for the different output files.
        | No default.
 
-    ``energy_calculator= ( ASE | lammps | internal | fortran | ASE_JUL)``
+    ``energy_calculator= ( ASE | lammps | internal | fortran | ASE_JUL | MACE )``
        | Energy calculator.
        | default: fortran
 
@@ -514,20 +514,36 @@ def usage():
      | When the ASE_JUL calculator is used, this is the path to the Julia project that must be setup prior to using this calculator
      | default: .
 
-    ``ACE_committee=[ T | F ]``
-     | If the ACE potential has a committee of potentials present, you can declare this as true and the committee STD per atom associated with every configuration produced will be calculated
+    ``MACE_model_path=string``
+     | When MACE calculator is used, this the path to the model
+     | default: None
+
+    ``MACE_device=string``
+     | When using the MACE calculator, you can use a GPU with option 'cuda', but it seems to be slower for NS.
+     | default: cpu
+
+    ``MACE_dtype=string``
+     | When using the MACE calculator, you can set the dtype to float32 or float64 balancing accuracy and speed.
+     | default: float32
+
+    ``MACE_comm_regex=string``
+     | This is the regex to match the committee of models which can then be used in sampling. This is separate from MACE_model_path to reduce computational expense. The committee is not evaluated for every step during sampling, only before accepting or rejecting a move.
+     | default: None
+
+    ``committee=[ T | F ]``
+     | If the ACE or MACE potential has a committee of potentials present, you can declare this as true and the committee STD associated with every configuration produced will be calculated
      | default: False
 
     ``min_std=float``
-     | If the ACE potential has a committee, and you have set ACE_committee to True, you can choose to reject configurations if the committees predictions have a standard deviation per atom greater than this value in eV/atom
+     | If the ACE or MACE potential has a committee, and you have set committee to True, you can choose to reject configurations if the committees predictions have a standard deviation per atom greater than this value in eV/atom
      | default: np.inf
 
      ``save_high_std=[ T | F ]``
-     | If the ACE potential has a committee, and you have set ACE_committee to True, and you have set a min_std value less than np.inf, you can choose to save configurations that are rejected only because the committee predictions have a standard deviation per atom greater than min_std.
+     | If the ACE or MACE potential has a committee, and you have set committee to True, and you have set a min_std value less than np.inf, you can choose to save configurations that are rejected only because the committee predictions have a standard deviation per atom greater than min_std.
      | default: False
     
      ``committee_std_stopping_criteria=[ T | F ]``
-     | If the ACE potential has a committee, and you have set ACE_committee to True, you can choose to stop a nested sampling calculation when a fraction of the walkers (committee_std_frac) have a committee STD per atom greater than committee_std_barrier. Other stopping criteria can be enabled simultaneously.
+     | If the ACE or MACE potential has a committee, and you have set committee to True, you can choose to stop a nested sampling calculation when a fraction of the walkers (committee_std_frac) have a committee STD per atom greater than committee_std_barrier. Other stopping criteria can be enabled simultaneously.
      | default: False
 
      ``committee_std_barrier=float``
@@ -696,8 +712,12 @@ def usage():
     sys.stderr.write("min_nn_dis=float, (0.0, reject initial walkers with a nearest neighbour distance less than this value in Angstroms)\n")
     sys.stderr.write("calc_nn_dis=[ T | F ], (F, reject walkers with a nearest neighbour distance less than min_nn_dis throughout the entire sampling procedure)\n")
     sys.stderr.write("ACE_json_path=string, (None, path to the .json file containing the ACE potential to be used with ACE_JUL calculator)\n")
-    sys.stderr.write("ACE_env_path=string, ('.', path to the julia project, which has the required modules to use the ACE calculator\n")
-    sys.stderr.write("ACE_committee=[ T | F ], (F, Declare if the potential has a committee present to calculate the committees standard deviation of energy predictions made on any configuration)\n")
+    sys.stderr.write("ACE_env_path=string, ('.', path to the julia project, which has the required modules to use the ACE calculator)\n")
+    sys.stderr.write("MACE_model_path=string, (None, Path to MACE model)\n")
+    sys.stderr.write("MACE_device=string, (cpu, Evaluate the MACE model by cpu or gpu=cuda)\n")
+    sys.stderr.write("MACE_dtype=string, (float32, Data type of MACE model, either float32 or float64)\n")
+    sys.stderr.write("MACE_comm_regex=string, (None, If using MACE committee, this is the path to match the models)\n")
+    sys.stderr.write("committee=[ T | F ], (F, Declare if the potential has a committee present to calculate the committees standard deviation of energy predictions made on any configuration)\n")
     sys.stderr.write("min_std=float, (np.inf, choose to reject walked clones if the committees standard deviation of energy predictions is above this value)\n")
     sys.stderr.write("save_high_std=[ T | F ], (F, Choose to save configurations that were rejected only because of the min_std value, cannot be True if min_std=np.inf)\n")
     sys.stderr.write("committee_std_stopping_criteria=[ T | F ], (F, Choose to enable a stopping criteria based on the fraction of walkers above a committee std barrier)\n")
@@ -925,15 +945,15 @@ def velo_unit_rv(n):
 
 def gen_random_velo(at, KEmax, unit_rv=None):
     if unit_rv is None:
-        unit_rv = velo_unit_rv(len(at))
+        unit_rv = velo_unit_rv(n_atoms)
     if movement_args['2D']:
         unit_rv[:, 2] = 0.0
 
     # propose right magnitude of randomness consistent with mobile atoms
     if movement_args['keep_atoms_fixed'] > 0:
-        rv_mag = velo_rv_mag(len(at)-movement_args['keep_atoms_fixed'])
+        rv_mag = velo_rv_mag(n_atoms-movement_args['keep_atoms_fixed'])
     else:
-        rv_mag = velo_rv_mag(len(at))
+        rv_mag = velo_rv_mag(n_atoms)
     #rv_mag = velo_rv_mag(len(at))
 
     # from Baldock thesis Eq. 11.10
@@ -1034,7 +1054,7 @@ def rej_free_perturb_velo(at, Emax, KEmax, rotate=True):
             # pick new random magnitude - count on dimensionality to make change small
             # WARNING: check this for variable masses
 
-            sqrt_masses_2D = np.sqrt(at.get_masses().reshape((len(at), 1)))
+            sqrt_masses_2D = np.sqrt(at.get_masses().reshape((n_atoms, 1)))
             scaled_vel = gen_random_velo(at, KEmax_use, velo/velo_mag) * sqrt_masses_2D
 
             if rotate:
@@ -1073,7 +1093,7 @@ def do_MC_atom_velo_walk(at, movement_args, Emax, nD, KEmax):
     n_steps = movement_args['velo_traj_len']
     step_size = movement_args['MC_atom_velo_step_size']
 
-    n_try = n_steps*len(at)
+    n_try = n_steps*n_atoms
 
     initial_KE = eval_energy_KE(at)
     KEmax_use = Emax - (at.info['ns_energy'] - initial_KE) # expecting ns_energy = KE + PE (+PV)
@@ -1089,9 +1109,9 @@ def do_MC_atom_velo_walk(at, movement_args, Emax, nD, KEmax):
         KE = initial_KE
         n_accept = 0
         for i_step in range(n_steps):
-            at_list = list(range(len(at)))
+            at_list = list(range(n_atoms))
             rng.shuffle_in_place(at_list)
-            d_vel = rng.normal(step_size, (len(at), 3))
+            d_vel = rng.normal(step_size, (n_atoms, 3))
             if movement_args['keep_atoms_fixed'] > 0:  # for surface simulations
                 d_vel[:movement_args['keep_atoms_fixed'], :] = 0
             for i_at in at_list:
@@ -1132,11 +1152,15 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
     pre_MD_E = at.info['ns_energy']
     
     #VGF If ACE committee is enabled then calculate uncertainty of config before walking or if present save it for later
-    if ns_args['ACE_committee']:
+    if ns_args['committee']:
         try:
             pre_uq_val = at.info['committee_std']
         except:
-            pre_uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+            if ns_args['ACE_committee']:
+                pre_uq_val = at.calc.get_property('co_ene_std', at)
+            elif ns_args['MACE_committee']:
+                pre_uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+            at.info['committee_std'] = pre_uq_val
     #DOC propagate in time atom_traj_len time steps of length MD_atom_timestep
     #DOC
     if movement_args['python_MD']:
@@ -1197,16 +1221,18 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
     if ns_args['calc_nn_dis']:
         distances = ase.geometry.get_distances(at.get_positions(), pbc=True, cell=at.get_cell())
         bonds = np.sort(distances[1], axis=None)
-        config_size = len(at)
-        min_bond = bonds[config_size]
+        min_bond = bonds[n_atoms]
 
         reject_len = min_bond < ns_args['min_nn_dis']
     else:
         reject_len = False
 
     #VGF calculate the ACE committee standard deviation in energy predictions and maybe reject if min_std provided, if enabled
-    if ns_args['ACE_committee']:
-        uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+    if ns_args['committee']:
+        if ns_args['ACE_committee']:
+            uq_val = at.calc.get_property('co_ene_std', at)
+        elif ns_args['MACE_committee']:
+            uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
 
         if uq_val > ns_args['min_std']:
             reject_uq = True
@@ -1254,8 +1280,8 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
         if ns_args['n_extra_data'] > 0:
             at.arrays['ns_extra_data'][...] = pre_MD_extra_data
         at.info['ns_energy'] = pre_MD_E
-        #VGF if ACE_committee is enabled and walker rejected, revert to old std value 
-        if ns_args['ACE_committee']:
+        #VGF if committee is enabled and walker rejected, revert to old std value 
+        if ns_args['committee']:
             at.info['committee_std'] = pre_uq_val
         n_accept = 0
     #DOC **else**: (accepted)
@@ -1271,8 +1297,8 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
             at.set_velocities(-at.get_velocities())  # is there a faster way of doing this in ASE?  Can you do at.velocities?
         at.info['ns_energy'] = final_E
 
-        #VGF If ACE_committee option is enabled then save the new std value
-        if ns_args['ACE_committee']:
+        #VGF If committee option is enabled then save the new std value
+        if ns_args['committee']:
             at.info['committee_std'] = uq_val
         n_accept = 1
 
@@ -1291,7 +1317,7 @@ def do_MC_atom_walk(at, movement_args, Emax, KEmax):
     n_steps = movement_args['atom_traj_len']
     step_size = movement_args['MC_atom_step_size']
     step_size_velo = movement_args['MC_atom_velo_step_size']
-    n_try = n_steps*(len(at)-movement_args['keep_atoms_fixed']) # does this do anything? actual n_try is set within fortran code 
+    n_try = n_steps*(n_atoms-movement_args['keep_atoms_fixed']) # does this do anything? actual n_try is set within fortran code 
     n_accept=0
     n_accept_velo = None
 
@@ -1307,7 +1333,7 @@ def do_MC_atom_walk(at, movement_args, Emax, KEmax):
     if movement_args['MC_atom_Galilean']:
         if movement_args['GMC_dir_perturb_angle'] < 0.0 or np.linalg.norm(at.arrays['GMC_direction']) == 0.0:
             # completely random orientation, magnitude 1
-            at.arrays['GMC_direction'][:,:] = rng.normal(1.0, (len(at), 3))
+            at.arrays['GMC_direction'][:,:] = rng.normal(1.0, (n_atoms, 3))
             if (movement_args['keep_atoms_fixed'] > 0):
                 at.arrays['GMC_direction'][:movement_args['keep_atoms_fixed'],:] = 0.0
             at.arrays['GMC_direction'] /= np.linalg.norm(at.arrays['GMC_direction']) # what is this line doing?
@@ -1345,21 +1371,57 @@ def do_MC_atom_walk(at, movement_args, Emax, KEmax):
         if (ns_args['debug'] >= 10 and movement_args['2D']): 
             if (any(orig_pos[:,2])>0.00001): #LIVIA
                 exit_error("Not a 2D system anymore\n",3)
+
         orig_energy = at.info['ns_energy']
         extra_term = eval_energy(at, do_PE=False, do_KE=False)
+        
+        if ns_args['committee']:
+            try:
+                pre_uq_val = at.info['committee_std']
+            except:
+                if ns_args['ACE_committee']:
+                    pre_uq_val = at.calc.get_property('co_ene_std', at)
+                elif ns_args['MACE_committee']:
+                    pre_uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+            at.info['committee_std'] = pre_uq_val
+        
         if propagate_lammps(at, step_size, n_steps, algo='GMC', Emax=Emax-extra_term ):
             energy1 = pot.results['energy'] + extra_term
-            if energy1 < Emax:
+            if ns_args['committee']:
+                if ns_args['ACE_committee']:
+                    uq_val = at.calc.get_property('co_ene_std', at)
+                elif ns_args['MACE_committee']:
+                    uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+                uq_accept = uq_val < ns_args['min_std']
+            else:
+                uq_accept = True
+
+            if ns_args['calc_nn_dis']:
+                distances = ase.geometry.get_distances(at.get_positions(), pbc=True, cell=at.get_cell())
+                bonds = np.sort(distances[1], axis=None)
+                min_bond = bonds[n_atoms]
+
+                accept_len = min_bond > ns_args['min_nn_dis']
+            else:
+                accept_len = True
+                
+            if energy1 < Emax and uq_accept and accept_len:
                 at.info['ns_energy'] = energy1
-                n_accept = 1 #n_steps*len(at)
+                if ns_args['committee']:
+                    at.info['committee_std'] = uq_val
+                n_accept = 1 #n_steps*n_atoms
                 n_try = 1
             else:
                 at.info['ns_energy'] = orig_energy
+                if ns_args['committee']:
+                    at.info['committee_std'] = pre_uq_val
                 at.set_positions(orig_pos)
                 n_accept = 0
                 n_try = 1
         else: # got an exception, reject traj
             at.info['ns_energy'] = orig_energy
+            if ns_args['committee']:
+                at.info['committee_std'] = pre_uq_val
             at.set_positions(orig_pos)
             n_accept = 0
             n_try = 1
@@ -1422,9 +1484,29 @@ def do_MC_atom_walk(at, movement_args, Emax, KEmax):
 
             if do_no_reverse: # accept/reject
                 n_try = 1
-                if E < Emax: # accept
+                if ns_args['committee']:
+                    if ns_args['ACE_committee']:
+                        uq_val = at.calc.get_property('co_ene_std', at)
+                    elif ns_args['MACE_committee']:
+                        uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+                    uq_accept = uq_val < ns_args['min_std']
+                else:
+                    uq_accept = True
+
+                if ns_args['calc_nn_dis']:
+                    distances = ase.geometry.get_distances(at.get_positions(), pbc=True, cell=at.get_cell())
+                    bonds = np.sort(distances[1], axis=None)
+                    min_bond = bonds[n_atoms]
+
+                    accept_len = min_bond > ns_args['min_nn_dis']
+                else:
+                    accept_len = True
+                    
+                if E < Emax and uq_accept and accept_len: # accept
                     # save new E, pos, direction
                     at.info['ns_energy'] = E
+                    if ns_args['committee']:
+                        at.info['committee_std'] = uq_val
                     at.set_positions(pos)
                     at.arrays['GMC_direction'][:,:] = d_pos/np.linalg.norm(d_pos)
                     n_accept = 1
@@ -1447,7 +1529,7 @@ def do_MC_atom_walk(at, movement_args, Emax, KEmax):
             #DOC \item **loop** atom\_traj\_len times
             for i_MC_step in range(n_steps):
                 #DOC \item **loop** over atoms in random order
-                at_list=list(range(len(at)))
+                at_list=list(range(n_atoms))
                 rng.shuffle_in_place(at_list)
                 for i_at in at_list:
                     #DOC \item propose single atom move
@@ -1486,26 +1568,25 @@ def do_MC_atom_walk(at, movement_args, Emax, KEmax):
     if n_accept_velo is not None:
         out['MC_atom_velo'] = (n_try, n_accept_velo)
     out['MC_atom'] = (n_try, n_accept)
-
     return out
 
 def propose_volume_step(at, step_size, flat_V_prior):
-    dV = rng.normal(step_size*len(at))
+    dV = rng.normal(step_size*n_atoms)
     orig_V = at.get_volume()
     new_V = orig_V+dV
     if new_V < 0: # negative number cannot be raised to fractional power, so this is only to avoid fatal error during the run
         new_V=abs(new_V)
         # print("Warning, the step_size for volume change might be too big, resulted in negative new volume", step_size, dV, orig_V+dV)
     #print("TRANSFORM", new_V, orig_V, dV, step_size, len(at))
-    transform = np.identity(3)*(new_V/orig_V)**(1.0/3.0)
+    transform = np.identity(3)*(new_V/orig_V)**(1/3)
     if flat_V_prior:
         p_accept = 1.0
     else:
-        p_accept = min(1.0, (new_V/orig_V)**len(at))
+        p_accept = min(1.0, (new_V/orig_V)**n_atoms)
     return (p_accept, transform)
 
 def propose_area_step(at, step_size, flat_V_prior):
-    dA = rng.normal(step_size*len(at))
+    dA = rng.normal(step_size*n_atoms)
     orig_cell = at.get_cell()
     orig_A = at.get_volume() / orig_cell[2,2]
     new_A = orig_A+dA
@@ -1518,7 +1599,7 @@ def propose_area_step(at, step_size, flat_V_prior):
     if flat_V_prior:
         p_accept = 1.0
     else:
-        p_accept = min(1.0, (new_A/orig_A)**len(at))
+        p_accept = min(1.0, (new_A/orig_A)**n_atoms)
     return (p_accept, transform)
 
 def propose_shear_step(at, step_size):
@@ -1590,7 +1671,7 @@ def min_aspect_ratio(vol, cell):
         # in 2D divide by the square root of area
         min_aspect_ratio /= (vol/np.sqrt(np.dot(cell[2,:],cell[2,:])))**(1.0/2.0)
     else:
-        min_aspect_ratio /= vol**(1.0/3.0)
+        min_aspect_ratio /= vol**(1/3)
 
     return min_aspect_ratio
 
@@ -1604,7 +1685,7 @@ def do_cell_step(at, Emax, p_accept, transform):
     new_vol = abs(np.dot(new_cell[0,:],np.cross(new_cell[1,:],new_cell[2,:])))
 
     # check size and shape constraints
-    if new_vol > ns_args['max_volume_per_atom']*len(at) or new_vol < ns_args['min_volume_per_atom']*len(at):
+    if new_vol > ns_args['max_volume_per_atom']*n_atoms or new_vol < ns_args['min_volume_per_atom']*n_atoms:
         return False
     if min_aspect_ratio(new_vol, new_cell) < movement_args['MC_cell_min_aspect_ratio']:
         return False
@@ -1614,12 +1695,16 @@ def do_cell_step(at, Emax, p_accept, transform):
     if ns_args['n_extra_data'] > 0:
         extra_data = at.arrays['ns_extra_data'].copy()
         
-    #VGF If ACE_committee is present and enabled, calculate the energy std value before walking
-    if ns_args['ACE_committee']:
+    #VGF If committee is present and enabled, calculate the energy std value before walking
+    if ns_args['committee']:
         try:
             pre_uq_val = at.info['committee_std']
         except:
-            pre_uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+            if ns_args['ACE_committee']:
+                pre_uq_val = at.calc.get_property('co_ene_std', at)
+            elif ns_args['MACE_committee']:
+                pre_uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+            at.info['committee_std'] = pre_uq_val
 
     # set new positions and velocities
     at.set_cell(new_cell, scale_atoms=True)
@@ -1627,8 +1712,7 @@ def do_cell_step(at, Emax, p_accept, transform):
     if ns_args['calc_nn_dis']:
         distances = ase.geometry.get_distances(at.get_positions(), pbc=True, cell=at.get_cell())
         bonds = np.sort(distances[1], axis=None)
-        config_size = len(at)
-        min_bond = bonds[config_size]
+        min_bond = bonds[n_atoms]
 
         accept_len = min_bond > ns_args['min_nn_dis']
     else:
@@ -1647,9 +1731,12 @@ def do_cell_step(at, Emax, p_accept, transform):
             new_energy = 2.0*abs(Emax)
         #print("error in eval_energy setting new_energy = 2*abs(Emax)=" , new_energy)
 
-        #VGF If ACE_committee is enabled, calculate the energy std, or just set to accept if not enabled
-        if ns_args['ACE_committee']:
-            uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+        #VGF If committee is enabled, calculate the energy std, or just set to accept if not enabled
+        if ns_args['committee']:
+            if ns_args['ACE_committee']:
+                uq_val = at.calc.get_property('co_ene_std', at)
+            elif ns_args['MACE_committee']:
+                uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
             uq_accept = uq_val < ns_args['min_std']
         else:
             uq_accept = True
@@ -1658,7 +1745,7 @@ def do_cell_step(at, Emax, p_accept, transform):
         if (new_energy < Emax) and uq_accept: # accept
             at.info['ns_energy'] = new_energy
             #VGF save std value to config
-            if ns_args['ACE_committee']:
+            if ns_args['committee']:
                 at.info['committee_std'] = uq_val
             return True
         else: # reject and revert
@@ -1666,8 +1753,8 @@ def do_cell_step(at, Emax, p_accept, transform):
             if (new_energy < Emax) and ns_args['save_high_std'] and not uq_accept:
                 at.info['committee_std'] = uq_val
                 ase.io.write(f"{ns_args['out_file_prefix']}hole.{rank}.{ns_args['config_file_format']}", at, append=True, parallel=False, format=ns_args['config_file_format'])
-            #VGF If ACE_committee enabled, and walker rejected, set the recorded std value back to previous value
-            if ns_args['ACE_committee']:
+            #VGF If committee enabled, and walker rejected, set the recorded std value back to previous value
+            if ns_args['committee']:
                 at.info['committee_std'] = pre_uq_val
             at.set_cell(orig_cell,scale_atoms=False)
             at.set_positions(orig_pos)
@@ -1699,7 +1786,7 @@ def do_MC_semi_grand_step(at, movement_args, Emax, KEmax):
 
     Z = at.get_atomic_numbers()
     n_types = len(movement_args['semi_grand_potentials'])
-    at_i = rng.int_uniform(0,len(at))
+    at_i = rng.int_uniform(0,n_atoms)
     type_i = rng.int_uniform(0,n_types)
     while Z_list[type_i] == Z[at_i]:
         type_i = rng.int_uniform(0,n_types)
@@ -1745,8 +1832,8 @@ def do_MC_swap_step(at, movement_args, Emax, KEmax):
     c2 = None
     while (c1 is None or c2 is None or np.all(Z[c1] == Z[c2])):
         # print(print_prefix, ": do_MC_swap try to find cluster ", cluster_size)
-        c1 = pick_interconnected_clump.pick_interconnected(rng, len(at), i_list, j_list, cluster_size, r_cut)
-        c2 = pick_interconnected_clump.pick_interconnected(rng, len(at), i_list, j_list, cluster_size, r_cut)
+        c1 = pick_interconnected_clump.pick_interconnected(rng, n_atoms, i_list, j_list, cluster_size, r_cut)
+        c2 = pick_interconnected_clump.pick_interconnected(rng, n_atoms, i_list, j_list, cluster_size, r_cut)
         # print(print_prefix, ": do_MC_swap got ", c1, c2)
         # decrement cluster size
         cluster_size -= 1
@@ -2487,7 +2574,7 @@ def additive_init_config(at, Emax):
     if do_calc_lammps:
         exit_error("python additive_init_config doesn't work with LAMMPS, since it varies list of atoms\n", 10)
     pos = at.get_positions()
-    for i_at in range(1,len(at)):
+    for i_at in range(1,n_atoms):
         at_new = at[0:i_at+1]
         if do_calc_ASE or do_calc_lammps:
             at_new.calc = at.calc
@@ -2827,6 +2914,42 @@ def do_ns_loop(
                 if all(replica_answers):
                     i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
                     break
+
+        if ns_args['committee_std_stopping_criteria'] and (i_ns_step % 500 == 0):
+            com_stds = []
+            for at in walkers:
+                try:
+                    co_std = at.info['committee_std']
+                except:
+                    if ns_args['ACE_committee']:
+                        co_std = at.calc.get_property('co_ene_std', at)
+                    elif ns_args['MACE_committee']:
+                        co_std = math.sqrt(comm_calc.get_property('energy_var', at))
+                    at.info['committee_std'] = co_std
+                com_stds.append(co_std)
+
+            across_boundary = sum(np.array(com_stds) > ns_args['committee_std_barrier'])
+            if comm is not None:
+                total_across_boundary = np.empty((1),dtype=int)
+                comm.Allreduce(across_boundary, total_across_boundary, op=MPI.SUM)
+
+                fraction_across = total_across_boundary[0]/ns_args['n_walkers']
+                if fraction_across >= ns_args['committee_std_frac']:
+                    if rank == 0:
+                        print(f"Leaving loop because {total_across_boundary[0]} of {ns_args['n_walkers']} walkers, {fraction_across}, are across the committee_std_barrier")
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
+                else:
+                    if rank == 0:
+                        print(f"Current fraction above committee_std_barrier: {total_across_boundary[0]} of {ns_args['n_walkers']}, {fraction_across}")
+            else:
+                fraction_across = across_boundary/ns_args['n_walkers']
+                if fraction_across >= ns_args['committee_std_frac']:
+                    print(f"Leaving loop because {across_boundary} of {ns_args['n_walkers']} walkers, {fraction_across}, are across the committee_std_barrier")
+                    i_ns_step += 1  # add one so outside loop when one is subtracted to get real last iteration it's still correct
+                    break
+                else:
+                    print(f"Current fraction above committee_std_barrier: {across_boundary} of {ns_args['n_walkers']}, {fraction_across}")
 
         if ns_args['T_estimate_finite_diff_lag'] > 0:
             Emax_history.append(Emax_of_step)
@@ -3786,7 +3909,8 @@ def main():
         global print_prefix
         global Z_list
         global upper_bound_z, lower_bound_z
-
+        global comm_calc
+        
         import sys
         
         sys.excepthook = excepthook_mpi_abort
@@ -3980,8 +4104,14 @@ def main():
         #energy_calculator ASE_JUL will have to be used for these args to be necessary
         ns_args['ACE_json_path'] = args.pop('ACE_json_path', None)
         ns_args['ACE_env_path'] = args.pop('ACE_env_path', '.')
+
+        ns_args['MACE_model_path'] = args.pop('MACE_model_path', None)
+        ns_args['MACE_device'] = args.pop('MACE_device', 'cpu')
+        ns_args['MACE_dtype'] = args.pop('MACE_dtype', 'float32')
+        ns_args['MACE_comm_regex'] = args.pop('MACE_comm_regex', None)
+        
         #A committee will need to be present within the potential .json file for these args to be necessary
-        ns_args['ACE_committee'] = str_to_logical(args.pop('ACE_committee', 'F'))
+        ns_args['committee'] = str_to_logical(args.pop('committee', 'F'))
         ns_args['min_std'] = float(args.pop('min_std', np.inf))
         ns_args['save_high_std'] = str_to_logical(args.pop('save_high_std', 'F'))
 
@@ -3989,7 +4119,7 @@ def main():
         ns_args['committee_std_barrier'] = float(args.pop('committee_std_barrier',np.inf))
         ns_args['committee_std_frac'] = float(args.pop('committee_std_frac',1.0))
         #Can't use related options with no committee
-        if not ns_args['ACE_committee']:
+        if not ns_args['committee']:
             ns_args['min_std'] = np.inf
             ns_args['committee_std_stopping_criteria'] = False
         #Can't let user save the uncertain configs with an infinite barrier present, all configs ever generated would be saved!
@@ -3998,6 +4128,20 @@ def main():
         #If barrier for stopping is infinity, or higher than allowed std, then no point in checking
         if (ns_args['committee_std_barrier'] == np.inf) or (ns_args['min_std'] < ns_args['committee_std_barrier']):
             ns_args['committee_std_stopping_criteria'] = False
+        #Determine if MACE or ACE committee
+        ns_args['ACE_committee'] = False
+        ns_args['MACE_committee'] = False
+        if ns_args['committee']:
+            if ns_args['MACE_comm_regex'] is not None:
+                ns_args['MACE_committee'] = True
+                from mace.calculators import MACECalculator
+                comm_calc = MACECalculator(model_paths=ns_args['MACE_comm_regex'], device=ns_args['MACE_device'], default_dtype=ns_args['MACE_dtype'])
+            elif ns_args['ACE_json_path'] is not None:
+                ns_args['ACE_committee'] = True
+            else:
+                print("WARNING: Enabled committee but no committee available. Disabling")
+                ns_args['committee'] = False
+                
         #End VGF parameters
         
         #BRIGHT ASE Z wall parameters
@@ -4081,6 +4225,11 @@ def main():
             print("ASE_JUL 3/4: Successfully imported pyjulip")
             do_calc_ASE=True
             with_julia=True
+
+        elif ns_args['energy_calculator'] == 'MACE':
+            from mace.calculators import MACECalculator
+            do_calc_ASE=True
+            with_MACE=True
 
         elif ns_args['energy_calculator'] == 'lammps':
             try:
@@ -4416,17 +4565,25 @@ def main():
 
         # initialise potential
         if do_calc_ASE:
-            if not with_julia:
-                pot = importlib.import_module(ns_args['ASE_calc_module']).calc
-
             #VGF Create the Julia ACE calculator
-            elif with_julia:
+            if with_julia:
                 print("ASE_JUL 4/4: Creating Julia ACE calculator")
                 try:
                     pot = pyjulip.ACE1(ns_args['ACE_json_path'])
                 except:
                     exit_error("ASE_JUL 4/4: Failure to create Julia ACE calculator, likely a problem with pyjulip or your julia environment", 142)
                 print("ASE_JUL 4/4: Successfully created Julia ACE calculator. Setup Complete!")
+            elif with_MACE:
+                print("MACE 1/2: Importing Potential")
+                pot = MACECalculator(model_paths=ns_args['MACE_model_path'], device=ns_args['MACE_device'], default_dtype=ns_args['MACE_dtype'])
+                print("MACE 2/2: Imported Potential")
+
+                if ns_args['MACE_committee']:
+                    print("MACE 1/2: Importing Committee")
+                    comm_calc = MACECalculator(model_paths=ns_args['MACE_comm_regex'], device=ns_args['MACE_device'], default_dtype=ns_args['MACE_dtype'])
+                    print("MACE 2/2: Imported Committee")
+            else:
+                pot = importlib.import_module(ns_args['ASE_calc_module']).calc
                 
         elif do_calc_internal or do_calc_fortran:
             pass
@@ -4587,7 +4744,7 @@ def main():
                         lc = 0.999*(ns_args['max_volume_per_atom']/ns_args['Z_cell_axis'])**(1.0/2.0)
                         init_atoms = ase.Atoms(cell=(lc, lc, ns_args['Z_cell_axis']), pbc=(1, 1, 1))
                     else:
-                        lc = 0.999*ns_args['max_volume_per_atom']**(1.0/3.0)
+                        lc = 0.999*ns_args['max_volume_per_atom']**(1/3)
                         init_atoms = ase.Atoms(cell=(lc, lc, lc), pbc=(1, 1, 1))
 
                     for species in species_list:
@@ -4602,7 +4759,7 @@ def main():
                         else:
                             exit_error("Each entry in start_species must include atomic number, multiplicity, and optionally mass", 5)
 
-                    init_atoms.set_cell(init_atoms.get_cell()*float(len(init_atoms))**(1.0/3.0), scale_atoms=True)
+                    init_atoms.set_cell(init_atoms.get_cell()*float(len(init_atoms))**(1/3), scale_atoms=True)
 
                 ase.io.write(outfile.file, init_atoms, parallel=False, format=ns_args['config_file_format'])
                 # ase.io.write(sys.stdout, init_atoms, format=ns_args['config_file_format'])
@@ -4622,6 +4779,8 @@ def main():
             for i_walker in range(n_walkers):
                 walkers.append(init_atoms.copy())
 
+            n_atoms = len(walkers[0])
+
             # set up data structures to track configs as they are cloned and evolve
             if ns_args['track_configs']:
                 raise NotImplementedError("Set track_configs=False for now")
@@ -4630,7 +4789,7 @@ def main():
                 else:
                     config_ind = comm.rank*n_walkers
             for at in walkers:
-                at.set_velocities(np.zeros((len(walkers[0]), 3)))
+                at.set_velocities(np.zeros((n_atoms, 3)))
                 if ns_args['track_configs']:
                     at.info['config_ind'] = config_ind
                     at.info['from_config_ind'] = -1
@@ -4645,14 +4804,19 @@ def main():
                 else:
                     cur_config_ind = n_walkers
 
+            if ns_args['committee']:
+                #convert from per atom
+                ns_args['min_std'] = ns_args['min_std']*n_atoms
+                ns_args['committee_std_barrier'] = ns_args['committee_std_barrier']*n_atoms
+
             # V should have prob distrib p(V) = V^N.
             # Using transformation rule p(y) = p(x) |dx/dy|, with p(y) = y^N and p(x) = 1,
             #       one gets dx/dy = y^N
             #                x = y^{N+1}
             #                y = x^{1/(N+1)}
             if ns_args['start_energy_ceiling_per_atom'] is not None:
-                ns_args['start_energy_ceiling'] = ns_args['start_energy_ceiling_per_atom'] * len(init_atoms)
-            ns_args['start_energy_ceiling'] += movement_args['MC_cell_P']*ns_args['max_volume_per_atom']*len(init_atoms)
+                ns_args['start_energy_ceiling'] = ns_args['start_energy_ceiling_per_atom'] * n_atoms
+            ns_args['start_energy_ceiling'] += movement_args['MC_cell_P']*ns_args['max_volume_per_atom']*n_atoms
             # initial positions are just random, up to an energy ceiling
             for (i_at, at) in enumerate(walkers):
                 # randomize cell if P is set, both volume (from appropriate distribution) and shape (from uniform distribution with min aspect ratio limit)
@@ -4661,14 +4825,14 @@ def main():
                     energy = float('nan')
                     if movement_args['MC_cell_P'] > 0.0:
                         if movement_args['2D']:
-                            lc = (len(at)*ns_args['max_volume_per_atom']/ns_args['Z_cell_axis']*rng.float_uniform(0.0,1.0)**(1.0/float(len(at)+1)))**(1.0/2.0)
+                            lc = (n_atoms*ns_args['max_volume_per_atom']/ns_args['Z_cell_axis']*rng.float_uniform(0.0,1.0)**(1.0/float(n_atoms+1)))**(1.0/2.0)
                             temp_cell = np.identity(3) * lc
                             temp_cell[2,2] = ns_args['Z_cell_axis']
                             at.set_cell( temp_cell )
                             do_cell_shape_walk(at, movement_args)
 
                         else:
-                            lc = (len(at)*ns_args['max_volume_per_atom']*rng.float_uniform(0.0,1.0)**(1.0/float(len(at)+1)))**(1.0/3.0)
+                            lc = (n_atoms*ns_args['max_volume_per_atom']*rng.float_uniform(0.0,1.0)**(1.0/float(n_atoms+1)))**(1/3)
                             at.set_cell( np.identity(3) * lc )
                             do_cell_shape_walk(at, movement_args)
 
@@ -4676,11 +4840,11 @@ def main():
                     # random initial positions
                     energy = float('nan')
                     n_try = 0
-                    #VGF added optional nn and ACE committee energy std rejection criteria
+                    #VGF added optional nn and committee energy std rejection criteria
                     reject_len = True
                     reject_uq = True
                     while (n_try < ns_args['random_init_max_n_tries']) and (((math.isnan(energy) or energy > ns_args['start_energy_ceiling'])) or reject_len or reject_uq):
-                        at.set_scaled_positions( rng.float_uniform(0.0, 1.0, (len(at), 3) ) )
+                        at.set_scaled_positions( rng.float_uniform(0.0, 1.0, (n_atoms, 3) ) )
                         if movement_args['2D']:  # zero the Z coordiates in a 2D simulation
                             temp_at=at.get_positions()
                             temp_at[:,2]=0.0
@@ -4689,8 +4853,7 @@ def main():
                         if ns_args['calc_nn_dis_init']:
                             distances = ase.geometry.get_distances(at.get_positions(), pbc=True, cell=at.get_cell())
                             bonds = np.sort(distances[1], axis=None)
-                            config_size = len(at)
-                            min_bond = bonds[config_size]
+                            min_bond = bonds[n_atoms]
                             #print('min_bond_here', min_bond)
 
                             reject_len = min_bond < ns_args['min_nn_dis']
@@ -4698,9 +4861,12 @@ def main():
                             reject_len = False
 
                         energy = eval_energy(at)
-                        #VGF if ACE committee enabled calculate committee energy std, and potentially reject based on min_std value
-                        if ns_args['ACE_committee']:
-                            uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+                        #VGF if committee enabled calculate committee energy std, and potentially reject based on min_std value
+                        if ns_args['committee']:
+                            if ns_args['ACE_committee']:
+                                uq_val = at.calc.get_property('co_ene_std', at)
+                            elif ns_args['MACE_committee']:
+                                uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
                             reject_uq = uq_val > ns_args['min_std']
                         else:
                             reject_uq = False
@@ -4713,7 +4879,7 @@ def main():
                     n_try = 0
                     if do_calc_fortran:
                         while n_try < ns_args['random_init_max_n_tries'] and (math.isnan(energy) or energy > ns_args['start_energy_ceiling']):
-                            f_MC_MD.init_config(at, ns_args['start_energy_ceiling']-movement_args['MC_cell_P']*ns_args['max_volume_per_atom']*len(init_atoms))
+                            f_MC_MD.init_config(at, ns_args['start_energy_ceiling']-movement_args['MC_cell_P']*ns_args['max_volume_per_atom']*n_atoms)
                             energy = eval_energy(at)
                             n_try += 1
                         if math.isnan(energy) or energy > ns_args['start_energy_ceiling']:
@@ -4733,26 +4899,30 @@ def main():
                 at.info['ns_energy'] = rand_perturb_energy(energy, ns_args['random_energy_perturbation'])
                 at.info['volume'] = at.get_volume()
 
-                #VGF If ACE_committee enabled calculate the final energy std value of the initialised walkers
-                if ns_args['ACE_committee']:
-                    uq_val = at.calc.get_property('co_ene_std', at)/len(at)
+                #VGF If committee enabled calculate the final energy std value of the initialised walkers
+                if ns_args['committee']:
+                    if ns_args['ACE_committee']:
+                        uq_val = at.calc.get_property('co_ene_std', at)
+                    elif ns_args['MACE_committee']:
+                        uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
                     at.info['committee_std'] = uq_val
-                    outfile.print('init_uq', uq_val)
+                    print('init_uq', uq_val)
+
                 #VGF if nn rejection criteria enabled, print the final smallest nearest neighbour distance
                 if ns_args['calc_nn_dis_init']:
                     distances = ase.geometry.get_distances(at.get_positions())
                     bonds = np.sort(distances[1], axis=None)
-                    min_bond = bonds[len(at)]
-                    outfile.print('min_bond_final', rank, min_bond)
-                #VGF end                
+                    min_bond = bonds[n_atoms]
+                    print('min_bond_final', rank, min_bond)
+                
             # Done initialising atomic positions. Now initialise momenta
 
             # set KEmax from P and Vmax
             if (movement_args['do_velocities']):
                 if ns_args['KEmax_max_T'] > 0.0:
-                    KEmax = 1.5*len(walkers[0])*ns_args['kB']*ns_args['KEmax_max_T']
+                    KEmax = 1.5*n_atoms*ns_args['kB']*ns_args['KEmax_max_T']
                 elif movement_args['MC_cell_P'] > 0.0:
-                    KEmax = 1.5*movement_args['MC_cell_P']*len(walkers[0])*ns_args['max_volume_per_atom']
+                    KEmax = 1.5*movement_args['MC_cell_P']*n_atoms*ns_args['max_volume_per_atom']
                 else:
                     exit_error("do_velocities is set, but neither KEmax_max_T nor MC_cell_P are > 0, so no heuristic for setting KEmax",4)
                 for at in walkers:
@@ -4777,6 +4947,13 @@ def main():
                 if rank == r:
                     walkers = at_list[r*n_walkers:(r+1)*n_walkers]  # TODO: RBW – split walkers on different processes? maybe we need to set things up (energies?) before splitting?
                     outfile.print(rank, r, walkers)
+
+            n_atoms = len(walkers[0])
+            if ns_args['committee']:
+                #convert from per atom
+                ns_args['min_std'] = ns_args['min_std']*n_atoms
+                ns_args['committee_std_barrier'] = ns_args['committee_std_barrier']*n_atoms
+
             for at in walkers:
                 if np.any(at.get_atomic_numbers()
                           != walkers[0].get_atomic_numbers()):
@@ -4816,7 +4993,7 @@ def main():
 
             if movement_args['do_velocities']:
                 #BRIGHT Assign KEmax if starting the simulation from restart file (i.e. iter=-1)
-                KEmax = 1.5*len(walkers[0])*ns_args['kB']*ns_args['KEmax_max_T']
+                KEmax = 1.5*n_atoms*ns_args['kB']*ns_args['KEmax_max_T']
                 #BRIGHT END
             else:
                 KEmax = -1.0
@@ -4837,8 +5014,8 @@ def main():
                         energy = eval_energy(at)
 
             for at in walkers:
-                if ns_args['n_extra_data'] > 0 and (not 'ns_extra_data' in at.arrays or at.arrays['ns_extra_data'].size/len(at) != ns_args['n_extra_data']):
-                    at.arrays['ns_extra_data'] = np.zeros( (len(at), ns_args['n_extra_data']) )
+                if ns_args['n_extra_data'] > 0 and (not 'ns_extra_data' in at.arrays or at.arrays['ns_extra_data'].size/n_atoms != ns_args['n_extra_data']):
+                    at.arrays['ns_extra_data'] = np.zeros( (n_atoms, ns_args['n_extra_data']) )
                 if do_calc_ASE or do_calc_lammps:
                     at.calc = pot
                 at.info['ns_energy'] = rand_perturb_energy(eval_energy(at), ns_args['random_energy_perturbation'])
@@ -4857,7 +5034,7 @@ def main():
                     # restart
                     if key == 'volume':
                         movement_args['MC_cell_volume_per_atom_step_size'] = (
-                                at.info['volume']/10.0/len(at))
+                                at.info['volume']/10.0/n_atoms)
                         key_found = True
                 if not key_found:
                     outfile.print( "WARNING: no volume information was found in the restart file. If volume changes will be done, the starting stepsize will be the default")
@@ -4869,10 +5046,10 @@ def main():
         if movement_args['do_GMC']:
             for at in walkers:
                 if 'GMC_direction' not in at.arrays:
-                    at.arrays['GMC_direction'] = np.zeros((len(at), 3))
+                    at.arrays['GMC_direction'] = np.zeros((n_atoms, 3))
 
         # scale initial MC_atom_step_size by max_vol^(1/3)
-        max_lc = (ns_args['max_volume_per_atom']*len(walkers[0]))**(1.0/3.0)
+        max_lc = (ns_args['max_volume_per_atom']*n_atoms)**(1/3)
         movement_args['MC_atom_step_size'] *= max_lc
         movement_args['MC_atom_step_size_max'] *= max_lc
         # scale MC_cell_shear_step_size by max_vol^1.0)
@@ -4890,7 +5067,7 @@ def main():
                 t0 = time.time()
             (Emax, Vmax, cull_rank, cull_ind) = max_energy(walkers, 1, comm=comm_replica)
             # WARNING: this assumes that all walkers have same numbers of atoms
-            Emax = Emax[0] + ns_args['initial_walk_Emax_offset_per_atom']*len(walkers[0])
+            Emax = Emax[0] + ns_args['initial_walk_Emax_offset_per_atom']*n_atoms
 
             # do full walks, not shortened walks that account for NS algorithm
             # parallelization
@@ -4950,7 +5127,7 @@ def main():
                 sys.exit(0)
 
         sys.stdout.flush()
-        n_atoms = len(walkers[0])
+        #n_atoms = len(walkers[0])
         # do NS
 
         # open the file where the trajectory will be printed
