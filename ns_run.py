@@ -1351,15 +1351,18 @@ def do_MC_atom_walk(at, movement_args, Emax, KEmax):
             energy1 = pot.results['energy'] + extra_term
             if energy1 < Emax:
                 at.info['ns_energy'] = energy1
-                n_accept = n_steps*len(at)
+                n_accept = 1 #n_steps*len(at)
+                n_try = 1
             else:
                 at.info['ns_energy'] = orig_energy
                 at.set_positions(orig_pos)
                 n_accept = 0
+                n_try = 1
         else: # got an exception, reject traj
             at.info['ns_energy'] = orig_energy
             at.set_positions(orig_pos)
             n_accept = 0
+            n_try = 1
 
     #DOC **else**: (do python MC)
     else:
@@ -4769,7 +4772,7 @@ def main():
             # swap atomic numbers if doing semi-grand canonical ensemble
             ns_args['swap_atomic_numbers'] = (
                     movement_args['n_semi_grand_steps'] > 0)
-            at_list = ase.io.read(ns_args['restart_file'], index=":")  # LIVIA
+            at_list = ase.io.read(ns_args['restart_file'], index=":", parallel=False)  # LIVIA
             for r in range(size):
                 if rank == r:
                     walkers = at_list[r*n_walkers:(r+1)*n_walkers]  # TODO: RBW – split walkers on different processes? maybe we need to set things up (energies?) before splitting?
