@@ -1,4 +1,4 @@
-import re, math, time, os, glob
+import re, math, time, os, glob #, warnings
 import pprint
 import numpy as np, ase, ase.io
 import ns_rng
@@ -15,6 +15,7 @@ from traceback import print_exception
 import check_memory
 from ase.md.verlet import VelocityVerlet
 import importlib
+#warnings.filterwarnings("ignore")
 
 print_prefix=""
 
@@ -1127,6 +1128,8 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
                 pre_uq_val = at.calc.get_property('co_ene_std', at)
             elif ns_args['MACE_committee']:
                 pre_uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+            elif ns_args['PET_committee']:
+                pre_uq_val = pot.run_model(at,{"energy_uncertainty": ModelOutput(per_atom=False)})["energy_uncertainty"].block().values.squeeze().detach().numpy()
             at.info['committee_std'] = pre_uq_val
     #DOC propagate in time atom_traj_len time steps of length MD_atom_timestep
     #DOC
@@ -1200,11 +1203,13 @@ def do_MD_atom_walk(at, movement_args, Emax, KEmax):
             uq_val = at.calc.get_property('co_ene_std', at)
         elif ns_args['MACE_committee']:
             uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+        elif ns_args['PET_committee']:
+            uq_val = pot.run_model(at,{"energy_uncertainty": ModelOutput(per_atom=False)})["energy_uncertainty"].block().values.squeeze().detach().numpy()
 
-        if uq_val > ns_args['min_std']:
-            reject_uq = True
-        else:
+        if uq_val < ns_args['min_std']:
             reject_uq = False
+        else:
+            reject_uq = True
     else:
         reject_uq = False
 
@@ -1350,6 +1355,8 @@ def do_MC_atom_walk(at, movement_args, Emax, KEmax):
                     pre_uq_val = at.calc.get_property('co_ene_std', at)
                 elif ns_args['MACE_committee']:
                     pre_uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+                elif ns_args['PET_committee']:
+                    pre_uq_val = pot.run_model(at,{"energy_uncertainty": ModelOutput(per_atom=False)})["energy_uncertainty"].block().values.squeeze().detach().numpy()
             at.info['committee_std'] = pre_uq_val
         
         if propagate_lammps(at, step_size, n_steps, algo='GMC', Emax=Emax-extra_term ):
@@ -1359,6 +1366,8 @@ def do_MC_atom_walk(at, movement_args, Emax, KEmax):
                     uq_val = at.calc.get_property('co_ene_std', at)
                 elif ns_args['MACE_committee']:
                     uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+                elif ns_args['PET_committee']:
+                    uq_val = pot.run_model(at,{"energy_uncertainty": ModelOutput(per_atom=False)})["energy_uncertainty"].block().values.squeeze().detach().numpy()
                 uq_accept = uq_val < ns_args['min_std']
             else:
                 uq_accept = True
@@ -1456,6 +1465,8 @@ def do_MC_atom_walk(at, movement_args, Emax, KEmax):
                         uq_val = at.calc.get_property('co_ene_std', at)
                     elif ns_args['MACE_committee']:
                         uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+                    elif ns_args['PET_committee']:
+                        uq_val = pot.run_model(at,{"energy_uncertainty": ModelOutput(per_atom=False)})["energy_uncertainty"].block().values.squeeze().detach().numpy()
                     uq_accept = uq_val < ns_args['min_std']
                 else:
                     uq_accept = True
@@ -1671,6 +1682,8 @@ def do_cell_step(at, Emax, p_accept, transform):
                 pre_uq_val = at.calc.get_property('co_ene_std', at)
             elif ns_args['MACE_committee']:
                 pre_uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+            elif ns_args['PET_committee']:
+                pre_uq_val = pot.run_model(at,{"energy_uncertainty": ModelOutput(per_atom=False)})["energy_uncertainty"].block().values.squeeze().detach().numpy()
             at.info['committee_std'] = pre_uq_val
 
     # set new positions and velocities
@@ -1704,6 +1717,8 @@ def do_cell_step(at, Emax, p_accept, transform):
                 uq_val = at.calc.get_property('co_ene_std', at)
             elif ns_args['MACE_committee']:
                 uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+            elif ns_args['PET_committee']:
+                uq_val = pot.run_model(at,{"energy_uncertainty": ModelOutput(per_atom=False)})["energy_uncertainty"].block().values.squeeze().detach().numpy()
             uq_accept = uq_val < ns_args['min_std']
         else:
             uq_accept = True
@@ -2704,7 +2719,7 @@ def do_ns_loop():
     log_X_n_term_sum = log_X_n_term_cumsum[-1]
     if ns_args['converge_down_to_T'] > 0:
         converge_down_to_beta = 1.0/(ns_args['kB']*ns_args['converge_down_to_T'])
-        log_Z_term_max = np.NINF
+        log_Z_term_max = -np.inf
 
     #prev_snapshot_iter = None
     #pprev_snapshot_iter = None
@@ -2795,6 +2810,8 @@ def do_ns_loop():
                         co_std = at.calc.get_property('co_ene_std', at)
                     elif ns_args['MACE_committee']:
                         co_std = math.sqrt(comm_calc.get_property('energy_var', at))
+                    elif ns_args['PET_committee']:
+                        co_std = pot.run_model(at,{"energy_uncertainty": ModelOutput(per_atom=False)})["energy_uncertainty"].block().values.squeeze().detach().numpy()
                     at.info['committee_std'] = co_std
                 com_stds.append(co_std)
 
@@ -3560,6 +3577,7 @@ def main():
         ns_args['random_energy_perturbation'] = float(args.pop('random_energy_perturbation', 1.0e-12))
         ns_args['n_extra_data'] = int(args.pop('n_extra_data', 0))
         ns_args['Z_cell_axis'] = float(args.pop('Z_cell_axis', 10.0))
+        ns_args['energy_calculator'] = args.pop('energy_calculator', 'fortran')
         #VGF parameters
         #Minimum nearest neighbour key words
         ns_args['min_nn_dis'] = float(args.pop('min_nn_dis', 0.0))
@@ -3574,6 +3592,8 @@ def main():
         ns_args['MACE_device'] = args.pop('MACE_device', 'cpu')
         ns_args['MACE_dtype'] = args.pop('MACE_dtype', 'float32')
         ns_args['MACE_comm_regex'] = args.pop('MACE_comm_regex', None)
+
+        ns_args['PET_path'] = args.pop('PET_path', None)
         
         #A committee will need to be present within the potential .json file for these args to be necessary
         ns_args['committee'] = str_to_logical(args.pop('committee', 'F'))
@@ -3596,6 +3616,7 @@ def main():
         #Determine if MACE or ACE committee
         ns_args['ACE_committee'] = False
         ns_args['MACE_committee'] = False
+        ns_args['PET_committee'] = False
         if ns_args['committee']:
             if ns_args['MACE_comm_regex'] is not None:
                 ns_args['MACE_committee'] = True
@@ -3603,6 +3624,8 @@ def main():
                 comm_calc = MACECalculator(model_paths=ns_args['MACE_comm_regex'], device=ns_args['MACE_device'], default_dtype=ns_args['MACE_dtype'])
             elif ns_args['ACE_json_path'] is not None:
                 ns_args['ACE_committee'] = True
+            elif ns_args['energy_calculator'] == 'PET':
+                ns_args['PET_committee'] = True
             else:
                 print("WARNING: Enabled committee but no committee available. Disabling")
                 ns_args['committee'] = False
@@ -3644,10 +3667,10 @@ def main():
         ns_args['KEmax_max_T'] = float(args.pop('KEmax_max_T', -1))
         ns_args['kB'] = float(args.pop('kB', 8.6173324e-5))  # eV/K
 
-        # parse energy_calculator
-        ns_args['energy_calculator'] = args.pop('energy_calculator', 'fortran')
         do_calc_ASE = False
         with_julia = False
+        with_MACE = False
+        with_PET = False
         do_calc_lammps = False
         do_calc_internal = False
         do_calc_fortran = False
@@ -3695,6 +3718,12 @@ def main():
             from mace.calculators import MACECalculator
             do_calc_ASE=True
             with_MACE=True
+        elif ns_args['energy_calculator'] == 'PET':
+            from metatomic.torch.ase_calculator import MetatomicCalculator
+            from metatomic.torch import ModelOutput
+            global ModelOutput
+            do_calc_ASE=True
+            with_PET=True
 
         elif ns_args['energy_calculator'] == 'lammps':
             try:
@@ -4006,6 +4035,10 @@ def main():
                     print("MACE 1/2: Importing Committee")
                     comm_calc = MACECalculator(model_paths=ns_args['MACE_comm_regex'], device=ns_args['MACE_device'], default_dtype=ns_args['MACE_dtype'])
                     print("MACE 2/2: Imported Committee")
+            elif with_PET:
+                print("PET Potential Import 1/2")
+                pot = MetatomicCalculator(ns_args['PET_path'], device=ns_args['MACE_device'], uncertainty_threshold=None, do_gradients_with_energy=False)
+                print("PET Potential Import 2/2")
             else:
                 pot = importlib.import_module(ns_args['ASE_calc_module']).calc
                 
@@ -4287,12 +4320,15 @@ def main():
                                 uq_val = at.calc.get_property('co_ene_std', at)
                             elif ns_args['MACE_committee']:
                                 uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
-                            reject_uq = uq_val > ns_args['min_std']
+                            elif ns_args['PET_committee']:
+                                uq_val = pot.run_model(at,{"energy_uncertainty": ModelOutput(per_atom=False)})["energy_uncertainty"].block().values.squeeze().detach().numpy()
+                            reject_uq = not uq_val < ns_args['min_std']
                         else:
                             reject_uq = False
                         n_try += 1
 
-                    if math.isnan(energy) or energy > ns_args['start_energy_ceiling'] or reject_len:
+                    if math.isnan(energy) or energy > ns_args['start_energy_ceiling'] or reject_len or reject_uq:
+                        print("energy issue:", energy > ns_args['start_energy_ceiling'] or math.isnan(energy), "nn_issue:", reject_len, "uq_issue:", reject_uq)
                         sys.stderr.write("WARNING: rank %d failed to generate initial config by random positions under max energy %f in %d tries\n" % (rank, ns_args['start_energy_ceiling'], ns_args['random_init_max_n_tries']))
 
                     # try FORTRAN config initializer
@@ -4307,8 +4343,30 @@ def main():
 
                     # try python config initializer
                     n_try = 0
-                    while n_try < ns_args['random_init_max_n_tries'] and (math.isnan(energy) or energy > ns_args['start_energy_ceiling']):
+                    while n_try < ns_args['random_init_max_n_tries'] and (math.isnan(energy) or energy > ns_args['start_energy_ceiling']) or reject_len or reject_uq:
                         energy = additive_init_config(at, ns_args['start_energy_ceiling'])
+                        #VGF calculate nn_distances and reject if enabled, otherwise skip calculation and dont reject based on nn distance
+                        if ns_args['calc_nn_dis_init']:
+                            distances = ase.geometry.get_distances(at.get_positions(), pbc=True, cell=at.get_cell())
+                            bonds = np.sort(distances[1], axis=None)
+                            min_bond = bonds[n_atoms]
+                            #print('min_bond_here', min_bond)
+
+                            reject_len = min_bond < ns_args['min_nn_dis']
+                        else:
+                            reject_len = False
+
+                        #VGF if committee enabled calculate committee energy std, and potentially reject based on min_std value
+                        if ns_args['committee']:
+                            if ns_args['ACE_committee']:
+                                uq_val = at.calc.get_property('co_ene_std', at)
+                            elif ns_args['MACE_committee']:
+                                uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+                            elif ns_args['PET_committee']:
+                                uq_val = pot.run_model(at,{"energy_uncertainty": ModelOutput(per_atom=False)})["energy_uncertainty"].block().values.squeeze().detach().numpy()
+                            reject_uq = not uq_val < ns_args['min_std']
+                        else:
+                            reject_uq = False
                         n_try += 1
 
                     # quit if failed to generate acceptable config
@@ -4325,6 +4383,8 @@ def main():
                         uq_val = at.calc.get_property('co_ene_std', at)
                     elif ns_args['MACE_committee']:
                         uq_val = math.sqrt(comm_calc.get_property('energy_var', at))
+                    elif ns_args['PET_committee']:
+                        uq_val = pot.run_model(at,{"energy_uncertainty": ModelOutput(per_atom=False)})["energy_uncertainty"].block().values.squeeze().detach().numpy()
                     at.info['committee_std'] = uq_val
                     print('init_uq', uq_val)
 
